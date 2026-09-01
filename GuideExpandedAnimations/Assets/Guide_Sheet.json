@@ -3,7 +3,8 @@
   "frameWidth": 32,
   "frameHeight": 48,
   "rows": [
-    { "state": "Idle", "row": 0, "frameCount": 4, "fps": 4, "loop": "Loop" }
+    { "state": "Idle",    "row": 0, "frameCount": 4, "fps": 4, "loop": "Loop" },
+    { "state": "Walking", "row": 1, "frameCount": 4, "fps": 8, "loop": "Loop" }
   ],
   "overlays": []
 }
