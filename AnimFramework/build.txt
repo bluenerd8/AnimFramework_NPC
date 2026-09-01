@@ -1,0 +1,4 @@
+displayName = AnimFramework
+author = MunSing Leong
+version = 0.1
+side = Client

@@ -1,0 +1,370 @@
+# AnimFramework — tModLoader High-FPS Animation Library
+
+## Project Goal
+A reusable tModLoader library mod that provides real-time (delta-time), tick-rate-independent
+sprite animation for NPCs — starting with vanilla compatibility (binding to existing vanilla
+NPC states/signals), with custom/modded NPC behavior explicitly deferred to a future pass.
+
+Two-mod structure:
+- **AnimFramework** (library) — zero gameplay content, zero NPC-specific data. Pure engine:
+  clip/player classes, JSON loader, attachment mechanisms (base class + registry).
+- **Content mods** (e.g. "Guide Expanded Animations") — depend on AnimFramework via
+  `modReferences`, own all actual sprite sheets, JSON layout files, and one `Register()` call
+  per NPC they animate.
+
+The library never contains a single NPC-specific number. Anything specific to how the Guide
+(or any NPC) actually animates lives entirely in that NPC's own content mod.
+
+---
+
+## Core Timing Model
+
+- Animation playback is driven by a `Stopwatch` (real elapsed time), not Terraria's 60-tick
+  `frameCounter` — this is the "bypass" that makes uncapped/off-tick-rate animation possible,
+  and it only matters because frame data (below) is fully declarable, not hardcoded.
+- **Per-row (per-animation) speed declaration, not per-NPC.** Idle, Walking, Attacking etc.
+  each declare their own pace independently — a single global FPS for the whole NPC was
+  explicitly rejected (it forces all animations to share one pace and fights frame count to
+  fake speed differences).
+- **Each row may declare either `fps` OR `duration` (loop time in seconds) — whichever is the
+  natural way to think about that specific animation:**
+  - `fps` is the default/primary path — matches how spriting tools (Aseprite etc.) and artists
+    naturally think, and is frame-count-independent (adding a frame doesn't change per-frame
+    speed, just total cycle length).
+  - `duration` is for animations where a fixed real-world rhythm is what matters, independent
+    of frame count — e.g. "this idle breathes once every 2 seconds" regardless of whether it's
+    drawn with 4 or 12 frames, or "5 frames over 0.5s" to get a smoother double-loop-per-second
+    feel without drawing extra frames. Confirmed as a first-class use case, not just an
+    "override" bolted onto fps.
+  - Whichever one is declared, the loader derives the other (`fps = frameCount / duration`,
+    `duration = frameCount / fps`).
+- **Per-frame duration (uneven hold times within one row) is explicitly deferred** — not
+  needed for anything currently specified (idle/walk/attack/sit/talk). Schema should be able
+  to absorb it later as an optional field without breaking the uniform case.
+- **Static, not velocity-linked** — Walking animation fps does not scale with the NPC's actual
+  `NPC.velocity` magnitude. Decided to keep this simple; flagged as a possible future
+  enhancement if a walk cycle ever visibly desyncs from apparent movement speed.
+
+## Loop Modes (per clip, modder's discretion — not predicted by the framework)
+- **`Loop`** — wraps to frame 0 forever. Used for continuous animations (Idle, Walking) and for
+  attack types where vanilla's own attack signal is a sustained "still attacking" hold rather
+  than a pulse (e.g. Dryad's Ward, a channeled/looping cast).
+- **`PingPong`** — plays forward then backward.
+- **`Once`** — plays through all frames once, then holds/freezes on the last frame
+  (`IsFinished` flips true) until state changes. Used where the vanilla attack signal is more
+  pulse-like or where the animation is meant to play through once and hold a pose (e.g. Guide:
+  points bow, holds static pose briefly, vanilla fires the arrow via its own logic).
+  - Explicitly **not** tied to matching vanilla's internal `AttackTime` — the freeze/hold
+    duration is self-contained and declared independently. Not knowing vanilla's exact
+    `AttackTime` value for a given NPC is not a blocker.
+  - Exit-from-Attacking logic only checks `IsFinished` for `Once`-mode clips; `Loop`-mode
+    attacks exit purely off vanilla's own attack-active signal dropping.
+
+Frame-count-per-loop-mode is **not** a hard rule tied together — they're independent fields.
+(Vanilla convention observed: throw/shoot/melee commonly use 4 frames, Guide/Traveling
+Merchant are a named 5-frame exception for shooting, magic commonly uses 2 frames — useful as
+a default assumption per attack type when authoring, not something to hardcode in the
+framework.)
+
+---
+
+## Sheet Authoring Convention
+
+- **Rigid row-per-animation layout**: one sprite sheet, each row = one animation state, frames
+  stacked left-to-right within a row, frame 0 at column 0. Chosen deliberately to match
+  existing Terraria spriting community conventions (vertical row stacking is standard) for
+  familiarity — even though the framework doesn't technically require it.
+- **Declared via external JSON file** (not XML — chosen for simplicity, native
+  `System.Text.Json` support, and parity with common animation-tool export formats), sitting
+  alongside the sheet's PNG as a bundled mod asset.
+- **Declarable per-clip origin/pivot**, defaulting to frame-centered when not specified — for
+  asymmetrical sprites (off-center weapon swings, capes, uneven padding) where a naive centered
+  origin would cause visible drift/misalignment against the hitbox as frames change.
+  - Per-frame (not just per-clip) origin override identified as a possible future escape hatch
+    if a specific animation's asymmetry changes frame-to-frame, but not needed for v1.
+
+### JSON Schema (conceptual shape)
+```json
+{
+  "texturePath": "GuideExpandedAnimations/Assets/Guide_Sheet",
+  "frameWidth": 64,
+  "frameHeight": 64,
+  "rows": [
+    { "state": "Idle",        "row": 0, "frameCount": 8,  "fps": 8,  "loop": "Loop" },
+    { "state": "SpecialIdle", "row": 1, "frameCount": 12, "fps": 8,  "loop": "Loop" },
+    { "state": "Walking",     "row": 2, "frameCount": 8,  "fps": 12, "loop": "Loop" },
+    { "state": "Attacking",   "row": 3, "frameCount": 5,  "duration": 0.5, "loop": "Once" },
+    { "state": "Sitting",     "row": 4, "frameCount": 4,  "fps": 4,  "loop": "PingPong" }
+  ],
+  "overlays": [
+    { "state": "Talk", "row": 5, "frameCount": 1 }
+  ]
+}
+```
+(`fps` vs `duration` per row is either/or; loader derives whichever wasn't given. Frame count
+is always required — it's what tells the reader how many columns to step through in that row.)
+
+---
+
+## Baseline Animation Set (current scope)
+
+**True states** (mutually exclusive, one active at a time, drive `CurrentState`):
+1. Idle
+2. SpecialIdle (occasional variant idle — no vanilla-native signal, framework's own
+   random-chance-after-N-ticks logic)
+3. Walking
+4. Attacking (single, non-directional attack animation for now — directional attack variants
+   like up/forward/down explicitly deferred; noted that since states are just string keys, this
+   is additive later, e.g. `Attacking_Up`, without reworking the controller)
+5. Sitting
+
+**Overlay** (not a state — drawn conditionally on top of whatever state is active, since it can
+co-occur with any of them):
+6. Talk — a **single static frame** (mouth-open), not a looping animation. Vanilla's own
+   speech-bubble indicator handles the "is chatting" UI separately; this overlay is specifically
+   for the character's own single open-mouth visual. `FrameCount: 1` means no animation math
+   actually runs — it's just a conditional extra draw call.
+  - **Resolved**: layered on top of the current state's frame as a second draw call (not a
+    frame swap/replace) — matches the existing overlay list mechanism, and is what
+    `AnimationController.DrawOverlays` implements.
+
+**Explicitly deferred to later passes:**
+- Triggered/one-shot secondary effect animations (e.g. directional attack "gust" effect) —
+  conceptually distinct from the Talk overlay: event-triggered (fires on state transition, e.g.
+  attack start) rather than continuously active, needs its own position offset (not centered on
+  NPC.Center) and direction-flipping, likely `Once` loop mode. Deferred until core
+  controller + authoring is solid.
+- Per-frame duration arrays.
+- Velocity-linked animation speed.
+- Directional attack variants.
+
+---
+
+## Vanilla Compatibility — Confirmed API Findings
+
+Binding to vanilla signals rather than inventing parallel detection, where a real vanilla
+signal exists:
+
+- **Walking** — `NPC.velocity != 0`. Direct, reliable, vanilla sets this itself.
+- **Talk overlay** — `Main.LocalPlayer.talkNPC == NPC.whoAmI`. Direct, reliable.
+- **Sitting** — vanilla has native town-NPC sitting support (added 1.4.4, bench/chair
+  interactions) with an `NPC.sitting` struct including an "is currently sitting" flag —
+  preferred over guessing from zero-velocity-near-furniture. **Still not confirmed against a
+  live API reference** — exact field name unverified, so `DetermineState()` does not reference
+  it yet (see Implementation Status).
+- **Idle / SpecialIdle** — no vanilla-native equivalent concept; stays framework-original logic.
+  Idle is effectively the fallback default when no other state applies.
+- **Attacking** — confirmed via `NPCID.Sets` fields and hooks, **not uniform across all NPCs**:
+  - `NPCID.Sets.AttackType[Type]`: **-1** = NPC does not attack at all (no Attacking state
+    needed/exists for these); **0** = throwing; **1** = shooting; **2** = magic; **3** = melee.
+  - `NPCID.Sets.AttackTime[Type]`: ticks (60/sec) — vanilla's own "how long the attack sequence
+    runs" value. Real per-NPC values NOT confirmed from memory/search (only found other
+    modders' example/tutorial numbers, e.g. 90 or 45 ticks for custom example NPCs — these are
+    NOT vanilla Guide's actual number). Confirmed as not a blocker: `Once`-mode clips are
+    self-timed and don't need to reference this value at all.
+  - `NPCID.Sets.AttackFrameCount[Type]`: vanilla's own frame count for that NPC's attack.
+  - `NPCID.Sets.DangerDetectRange[Type]`: detection radius for engaging enemies — closest thing
+    to an "alert range," but it's a detection radius, not a separate pre-attack animation state.
+    No dedicated "alert" boolean field found.
+  - `NPCID.Sets.AttackAverageChance[Type]`: denominator for attack-attempt chance (aggressionish).
+  - **For attack types 0/1/2 (throw/shoot/magic)**: a documented, confirmed hook family tied to
+    projectile creation — determines projectile type/delay, and a specific hook for "this NPC
+    has already created a projectile and will create more as part of one attack" (multi-shot
+    attacks). This is the reliable "attack is happening" trigger point for these three types.
+    There's also a dedicated hook for customizing how a shooting-type NPC's weapon/bow is drawn
+    — flagged as possibly the cleaner attach point for arm/bow-out visuals rather than folding
+    it into the body row sheet.
+  - **For attack type 3 (melee)**: no matching documented hook found. Genuine unknown — needs
+    direct empirical testing (spawn a melee-attacking town NPC, log field/hook behavior) before
+    building assumptions for this category.
+  - Exact hook method names/signatures (`TownNPCAttackProj` and similar) were found via search
+    snippet paraphrase only — **not confirmed against a live API reference**. Must be verified
+    directly against `docs.tmodloader.net`'s ModNPC/GlobalNPC reference before coding against
+    them for real.
+
+**Observed vanilla frame-count-by-attack-type convention** (useful default assumption per type,
+not a hard framework rule):
+- Throwing / Shooting / Melee: 4 attacking frames baseline.
+- Magic: 2 frames (consistent with a channeled/held cast, though frame count alone doesn't
+  prove looping vs. one-shot — confirmed via the Dryad's actual persistent "Dryad's Ward" effect
+  as a real sustained/loop-appropriate example).
+- Guide and Traveling Merchant: named exception, 5 frames for shooting (not the 4-frame
+  baseline).
+- Shooting has a further special case: an alternate "arm raised" frame swapped in when aiming
+  straight ahead, on top of the normal sequence.
+
+"Single anim" in this project's usage = plays the full declared frame sequence once and holds
+(`Once` mode) — **not** a single static frame. (Single static frame = the Talk overlay case,
+`FrameCount: 1`, a separate concept.)
+
+**Hooks confirmed directly against docs.tmodloader.net while implementing the POC** (see
+Implementation Status): `ModNPC.PreDraw(SpriteBatch, Vector2 screenPos, Color drawColor)`,
+`ModNPC.FindFrame(int frameHeight)`, `GlobalNPC.InstancePerEntity`, `GlobalNPC.AppliesToEntity
+(TEntity, bool lateInstantiation)`, `GlobalNPC.Clone(TEntity from, TEntity to)`,
+`GlobalNPC.PreDraw(NPC, SpriteBatch, Vector2, Color)`. Note `FindFrame` — vanilla's own
+animation hook, called once per fixed-60Hz logic tick — was deliberately **not** used for
+playback here: it would cap real-time smoothness back down to tick rate on any client whose
+render rate outpaces the logic tick, defeating the framework's whole premise. `PreDraw`
+(called once per actual render/`Draw()` call) is used instead, with the NPC's own draw fully
+overridden (`return false`) rather than relying on `npc.frame`/`FindFrame`.
+
+---
+
+## Modularity / Activation Model
+
+- **Not global by default.** `AnimatedGlobalNPC.AppliesToEntity` checks `AnimationRegistry`
+  and only attaches real per-instance state to NPC types that were explicitly registered —
+  unregistered NPCs cost nothing and are untouched.
+- **Two attachment paths, kept both:**
+  1. **Base-class** (`AnimatedNPC : ModNPC`) — for building a new NPC from scratch. Simpler,
+     used for your own POC NPC.
+  2. **Registry** (`AnimationRegistry` + `AnimatedGlobalNPC`) — for attaching animations to
+     *any* NPC (vanilla NPC via `NPCID.*` constant, or another mod's NPC via their exposed
+     type), without needing inheritance. Required for compatibility/expansion-style content
+     mods like "Guide Expanded Animations."
+- **Explicit registration only — no mod detection.** No scanning `ModLoader.Mods`, no
+  reflection-based discovery of what's installed. A content mod depends on the library via
+  `modReferences` in `build.txt` and calls `AnimationRegistry.Register(...)` for exactly the
+  NPC type(s) it owns, in its own `PostSetupContent()`. This mirrors standard cross-mod
+  compatibility patterns both within tModLoader (`Mod.Call()`-style APIs, e.g. Boss Checklist)
+  and generally (DI container registration, WordPress `add_action` hooks) — the generic core
+  stays a dumb lookup table; specific behavior announces itself into that table.
+- **Resolved**: two content mods registering the same NPC type is last-registered-wins, by
+  virtue of the underlying `Dictionary` overwrite in `AnimationRegistry.Register` — documented
+  explicitly in that method's XML doc comment rather than left as a silent surprise.
+
+---
+
+## Fallback / Validation Needs
+
+Distinguish between two categories:
+- **Computed values from good data never need fallback** — frame/loop math (division, modulo)
+  is correct by construction once inputs are valid.
+- **Anything depending on hand-authored JSON needs defensive handling**, since that's where
+  human mistakes actually occur:
+  - Missing/zero fps or duration — handled: `AnimationClip`'s constructor falls back to a safe
+    default (1 fps) rather than dividing by zero.
+  - Unrecognized loop mode string (typo) — handled: `SheetLayoutLoader` logs a warning and
+    defaults to `Loop` rather than throwing during deserialization.
+  - Declared row index beyond the actual sheet's pixel height — handled: `SheetLayoutLoader`
+    bounds-checks each row against the loaded texture's actual height, logs an error, and skips
+    that row rather than silently reading garbage/out-of-bounds pixels.
+  - Missing required state (e.g. no `Idle` row) — handled by design: `AnimationController.PreDraw`
+    falls back to vanilla drawing (`return true`) whenever the current state has no registered
+    clip.
+  - Missing/bad texture path — **resolved as loud**: `SheetLayoutLoader.Load` throws at load
+    time if `texturePath` is missing, and `ModContent.Request` throws its own error if the path
+    doesn't resolve to a real asset — both surface immediately as a load-time error rather than
+    leaving an invisible NPC with no clue why.
+
+---
+
+## Implementation Status (as of this doc)
+
+Files written (C# targeting tModLoader; **not yet compiled/tested against a real tModLoader
+install** — key hook signatures were checked against docs.tmodloader.net while writing this
+pass, but a first real `Build + Reload` should still be expected to surface small fixes):
+
+- `AnimFramework/Animation/LoopMode.cs` — `Loop` / `PingPong` / `Once` enum.
+- `AnimFramework/Animation/AnimationClip.cs` — clip definition: state name, texture path, frame
+  width/height/count, row (Y offset for shared multi-row sheets), fps/duration (mutually
+  derived), loop mode, optional per-clip origin, cached `Asset<Texture2D>` (`ImmediateLoad`).
+- `AnimFramework/Animation/AnimationPlayer.cs` — `Stopwatch`-driven playback: `GetCurrentFrame()`,
+  `Play()`/`Reset()`, `IsFinished`, Loop/PingPong/Once math.
+- `AnimFramework/Animation/AnimationSet.cs` — states dictionary + overlays list container for
+  one NPC type's full animation set.
+- `AnimFramework/Animation/AnimationRuntime.cs` — per-instance mutable state (current state,
+  state player, overlay players/active-set). Must be freshly built per NPC instance — see the
+  `Clone()` overrides below.
+- `AnimFramework/Animation/AnimationController.cs` — the shared state-machine + draw logic used
+  by both attachment paths: `DetermineState()` (Idle/Walking wired; Attacking/Sitting/SpecialIdle
+  are marked `TODO` pending the still-unconfirmed vanilla hooks), `PreDraw()`, overlay
+  activate/deactivate edge tracking, `DrawClip()`.
+- `AnimFramework/Animation/AnimatedNPC.cs` — abstract base class (attachment path 1): per-type
+  cached `AnimationSet`, per-instance `AnimationRuntime` rebuilt fresh on `Clone()` (fixes the
+  MemberwiseClone shared-Stopwatch bug), `PreDraw` delegating to `AnimationController`.
+- `AnimFramework/Animation/AnimationRegistry.cs` — static `Dictionary<int, Lazy<AnimationSet>>`
+  mapping NPC type → lazily-built, cached animation set. `Register`, `Unregister`, `TryGet`,
+  `IsRegistered`.
+- `AnimFramework/Animation/AnimatedGlobalNPC.cs` — attachment path 2: `GlobalNPC` with
+  `InstancePerEntity = true`; `AppliesToEntity` gated on `AnimationRegistry` membership
+  (opt-in, not global); same Clone-safety fix as `AnimatedNPC`; delegates to the same
+  `AnimationController` as the base-class path (no duplicated state/draw logic between the two).
+- `AnimFramework/Animation/SheetLayoutLoader.cs` — `SheetDefinition`/`SheetRowDefinition` JSON
+  schema classes, `System.Text.Json`-based loader (via `Mod.GetFileBytes`), with the defensive
+  handling described above; converts a parsed sheet definition into an `AnimationSet`.
+- `AnimFramework/AnimFramework.cs`, `build.txt`, `description.txt`, `icon.png` — library mod
+  shell. No gameplay content.
+- `GuideExpandedAnimations/GuideExpandedAnimations.cs`, `build.txt` (`modReferences =
+  AnimFramework`), `description.txt`, `icon.png` — content mod shell.
+- `GuideExpandedAnimations/GuideAnimationSetup.cs` — `ModSystem.PostSetupContent()` registering
+  `NPCID.Guide` via `AnimationRegistry.Register`, per the Registry attachment path (resolved
+  decision: the POC targets the real vanilla Guide, not a from-scratch lookalike — see Rollout
+  Plan below).
+- `GuideExpandedAnimations/Assets/Guide_Sheet.json` — Idle-only layout (POC scope): 4 frames,
+  32×48, 4 fps, `Loop`.
+- `GuideExpandedAnimations/Assets/Guide_Sheet.png` — **generated placeholder art** (a simple
+  tinted humanoid silhouette with a per-frame bob), not real Guide sprite work. Swap this file
+  (and extend the JSON) for real art without touching any engine code.
+
+**Known gaps against the current design discussion (not yet coded):**
+- Attack-state binding to the real vanilla shoot/throw/magic hooks, and Sitting-state binding
+  to `NPC.sitting` — both left as explicit `TODO`s in `AnimationController.DetermineState`
+  pending confirmation against a live API reference (melee attack type especially — still a
+  genuine unknown per the Vanilla Compatibility section above).
+- SpecialIdle's random-chance-after-N-ticks logic — not implemented.
+- Per-clip origin is wired into `AnimationClip`/`AnimationController.DrawClip` (unlike the
+  original design-only note); per-frame origin overrides remain out of scope, as designed.
+- Triggered/one-shot secondary effect system (attack-gust style) — explicitly deferred, no code
+  yet.
+- Because `AnimatedGlobalNPC.PreDraw` fully overrides the vanilla Guide's draw call while an
+  animated state is active, any vanilla per-instance visual effects on Guide (dye/shader-style
+  effects, if any apply to town NPCs) are bypassed along with the rest of vanilla's draw. Not
+  applicable to vanilla Guide today as far as this pass could confirm, but worth remembering if
+  this pattern is reused on an NPC where it matters.
+
+---
+
+## Rollout Plan
+1. Ship as proof of concept first: **one NPC, one state (Idle only)**, small frame count.
+   **Resolved**: the POC targets the real vanilla Guide (`NPCID.Guide`) via the Registry +
+   `AnimatedGlobalNPC` attachment path, not a from-scratch lookalike NPC via the base class —
+   chosen over the base-class route because "Guide Expanded Animations" is explicitly a
+   compatibility/expansion-style content mod per the Modularity section, and proving the
+   registry path end-to-end (including vanilla-NPC coexistence) was judged more valuable than
+   deferring that risk to a later pass. Confirm real-time playback and rendering work correctly
+   in-game before adding Walking/Attacking/Sitting/Talk.
+2. Expand to the full baseline set (Idle, SpecialIdle, Walking, Attacking, Sitting, Talk
+   overlay) once the core loop is confirmed working.
+3. Publish the library mod (AnimFramework) plus one minimal single-NPC content mod (Guide
+   Expanded Animations) as the first public example, so the "modular, multi-mod" design claim
+   is demonstrated in practice, not just asserted.
+4. Later passes (explicitly out of scope for now): directional attacks, triggered secondary
+   effects, per-frame timing, velocity-linked animation speed.
+
+---
+
+## Dev Environment Setup (for reference)
+1. Install tModLoader via Steam; enable Developer Mode; use Workshop → Open Mod Sources.
+2. Install a C# IDE — Visual Studio Community (recommended, best debugging) or VS Code + C#
+   extension. Install the .NET SDK if not bundled.
+3. Point tModLoader's Mod Sources folder at (or copy/symlink into it) this repo's
+   `AnimFramework/` and `GuideExpandedAnimations/` folders — they're laid out as standard
+   tModLoader mod source folders (`build.txt` + namespace-matching `.cs` files) but were
+   authored outside a live tModLoader install, so **no `.csproj` is committed**. Opening/building
+   them once through tModLoader's Mod Sources UI (or its "Build" command) generates the
+   per-mod `.csproj` tModLoader itself expects; if that doesn't happen automatically for a
+   folder it didn't create, use tModLoader's "Create Mod" wizard against an empty temp
+   folder and copy the generated `.csproj` in as a starting point.
+4. `build.txt` in both mods already sets `displayName`/`author`/`version`/`side`;
+   `GuideExpandedAnimations/build.txt` already has `modReferences = AnimFramework`.
+5. Build + Reload AnimFramework first, then GuideExpandedAnimations, to catch compile errors
+   early per mod.
+6. Enable both mods, test in-world with an actual Guide NPC present (and with multiple Guides
+   spawned via multiplayer/`cheatsheet`-style tools if available, to catch any instance-sharing
+   regression — the exact bug `AnimatedNPC.Clone`/`AnimatedGlobalNPC.Clone` are meant to
+   prevent).
+
+Note: tModLoader's exact UI wording/menu locations should be confirmed against current official
+docs (`docs.tmodloader.net`) rather than trusted from memory here, since the interface shifts
+across versions.

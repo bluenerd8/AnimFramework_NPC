@@ -1,0 +1,8 @@
+Library mod providing real-time, tick-rate-independent sprite animation for NPCs.
+
+Pure engine, no gameplay content: clip/player classes, a JSON sheet-layout loader, and two
+attachment mechanisms (a base ModNPC class, and a registry + GlobalNPC for attaching animation
+to vanilla or other mods' NPCs without inheritance).
+
+Adds nothing to your game by itself — install a content mod built against it (e.g. "Guide
+Expanded Animations") to see anything change.

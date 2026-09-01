@@ -1,0 +1,5 @@
+displayName = Guide Expanded Animations
+author = MunSing Leong
+version = 0.1
+side = Client
+modReferences = AnimFramework
