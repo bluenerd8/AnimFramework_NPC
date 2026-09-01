@@ -56,7 +56,7 @@ namespace AnimFramework.Animation
             switch (_clip.Loop)
             {
                 case LoopMode.Once:
-                    if (cyclePos >= frameCount - 1)
+                    if (cyclePos >= frameCount)
                     {
                         IsFinished = true;
                         return frameCount - 1;
