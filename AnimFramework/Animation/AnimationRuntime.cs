@@ -34,10 +34,28 @@ namespace AnimFramework.Animation
         /// </summary>
         public Stopwatch AttackSignalAge { get; } = new Stopwatch();
 
+        /// <summary>
+        /// Bumped once per <see cref="AnimationController.NotifyAttackTriggered"/> call —
+        /// identifies *which* real attack-start signal is currently live, distinct from how long
+        /// ago it fired (<see cref="AttackSignalAge"/>). Lets a Once-mode Attacking clip tell
+        /// "still the same attack I already played for" from "a genuinely new one arrived" —
+        /// see <see cref="LastConsumedAttackSignalId"/> and DetermineAttackingState.
+        /// </summary>
+        public int AttackSignalId { get; set; }
+
+        /// <summary>The <see cref="AttackSignalId"/> a Once-mode Attacking clip has already played a full cycle for.</summary>
+        public int LastConsumedAttackSignalId { get; set; }
+
         /// <summary>Real-time clock behind the Blink timed overlay — see AnimationController.ShouldBlink.</summary>
         public Stopwatch BlinkClock { get; } = new Stopwatch();
 
         /// <summary>Elapsed-seconds-on-<see cref="BlinkClock"/> timestamp for this NPC's next scheduled blink.</summary>
         public double NextBlinkAt { get; set; }
+
+        /// <summary>Real-time clock behind the SpecialIdle occasional-variant timer — see AnimationController.DetermineIdleState.</summary>
+        public Stopwatch SpecialIdleClock { get; } = new Stopwatch();
+
+        /// <summary>Elapsed-seconds-on-<see cref="SpecialIdleClock"/> timestamp for this NPC's next scheduled SpecialIdle roll.</summary>
+        public double NextSpecialIdleAt { get; set; }
     }
 }

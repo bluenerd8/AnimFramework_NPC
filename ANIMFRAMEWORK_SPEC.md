@@ -100,10 +100,10 @@ framework.)
     { "state": "SpecialIdle", "row": 1, "frameCount": 12, "fps": 8,  "loop": "Loop" },
     { "state": "Walking",     "row": 2, "frameCount": 8,  "fps": 12, "loop": "Loop" },
     { "state": "Attacking",   "row": 3, "frameCount": 5,  "duration": 0.5, "loop": "Once" },
-    { "state": "Sitting",     "row": 4, "frameCount": 4,  "fps": 4,  "loop": "PingPong" }
+    { "state": "Sitting",     "row": 4, "frameCount": 4,  "fps": 4,  "loop": "PingPong" },
+    { "state": "Talk",        "row": 5, "frameCount": 2,  "fps": 3,  "loop": "Loop" }
   ],
   "overlays": [
-    { "state": "Talk", "row": 5, "frameCount": 1 },
     { "state": "Blink", "row": 6, "frameCount": 3, "fps": 12, "loop": "Once",
       "intervalMin": 2, "intervalMax": 5 }
   ]
@@ -121,22 +121,28 @@ Blink — omit both for the framework default, declare either or both to overrid
 **True states** (mutually exclusive, one active at a time, drive `CurrentState`):
 1. Idle
 2. SpecialIdle (occasional variant idle — no vanilla-native signal, framework's own
-   random-chance-after-N-ticks logic)
+   randomized-interval logic; **implemented**, reusing the Blink overlay's interval mechanism —
+   see Implementation Status)
 3. Walking
 4. Attacking (single, non-directional attack animation for now — directional attack variants
    like up/forward/down explicitly deferred; noted that since states are just string keys, this
    is additive later, e.g. `Attacking_Up`, without reworking the controller)
 5. Sitting
-
-**Overlay** (not a state — drawn conditionally on top of whatever state is active, since it can
-co-occur with any of them):
-6. Talk — a **single static frame** (mouth-open), not a looping animation. Vanilla's own
-   speech-bubble indicator handles the "is chatting" UI separately; this overlay is specifically
-   for the character's own single open-mouth visual. `FrameCount: 1` means no animation math
-   actually runs — it's just a conditional extra draw call.
-  - **Resolved**: layered on top of the current state's frame as a second draw call (not a
-    frame swap/replace) — matches the existing overlay list mechanism, and is what
-    `AnimationController.DrawOverlays` implements.
+6. Talk — **revised from overlay to a true state.** Originally spec'd as a single static
+   mouth-open frame layered on top of whatever state was active (see the superseded "Resolved"
+   note this replaces, below). Revisited: an overlay mark can't express a full bodily talking
+   animation (a hand gesture, a distinct stance) without the underlying pose fighting it, and
+   what prompted rethinking this in the first place was realizing "Talk" was originally meant to
+   cover vanilla's ambient NPC-to-NPC chat behavior (random emote-bubble chatter, a real system —
+   `ModEmoteBubble`/`EmoteBubbleLoader`, confirmed via docs.tmodloader.net), not just the
+   player-has-dialog-open case — a case worth a full animation, not a static mark. Now a full
+   clip like any other state, author-chosen `Loop` or `Once` like every other row — no
+   special-casing beyond the trigger check itself.
+   - **Superseded note** (kept for history): "layered on top of the current state's frame as a
+     second draw call (not a frame swap/replace) — matches the existing overlay list mechanism."
+     This was `AnimationController.DrawOverlays`'s original design; Talk no longer uses it (the
+     `ShouldDrawOverlay` "Talk" case was removed). Blink is still a true overlay — the taxonomy
+     the overlay mechanism was built for still applies there, just not to Talk anymore.
 
 **Explicitly deferred to later passes:**
 - Triggered/one-shot secondary effect animations (e.g. directional attack "gust" effect) —
@@ -156,7 +162,13 @@ Binding to vanilla signals rather than inventing parallel detection, where a rea
 signal exists:
 
 - **Walking** — `NPC.velocity != 0`. Direct, reliable, vanilla sets this itself.
-- **Talk overlay** — `Main.LocalPlayer.talkNPC == NPC.whoAmI`. Direct, reliable.
+- **Talk** (now a state, not an overlay — see Baseline Animation Set above) —
+  `Main.LocalPlayer.talkNPC == NPC.whoAmI`. Direct, reliable, but only covers the
+  player-has-this-NPC's-dialog-open case. The other case this state was meant to cover —
+  vanilla's ambient NPC-to-NPC emote-bubble chatter (`ModEmoteBubble`/`EmoteBubbleLoader`,
+  confirmed to exist) — is **not yet wired**: the exact way to read "does this NPC currently
+  have an active emote bubble" from `PreDraw` isn't confirmed. Needs one more targeted doc pass
+  or empirical testing, same bar as Sitting below — not guessed.
 - **Sitting** — vanilla has native town-NPC sitting support (added 1.4.4, bench/chair
   interactions) with an `NPC.sitting` struct including an "is currently sitting" flag —
   preferred over guessing from zero-velocity-near-furniture. Now wired as `NPC.sitting.isSitting`
@@ -294,12 +306,15 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
   state player, overlay players/active-set). Must be freshly built per NPC instance — see the
   `Clone()` overrides below.
 - `AnimFramework/Animation/AnimationController.cs` — the shared state-machine + draw logic used
-  by both attachment paths: `DetermineState()` (Idle/Walking/Sitting/Attacking wired;
-  SpecialIdle still not — see Known Gaps), a public `RegisterStateDetector` extension point
-  (see `ANIMFRAMEWORK_NEW_FEATURES.md` §2), `PreDraw()`, overlay activate/deactivate edge
-  tracking (including the Blink timed overlay, §4 of the same doc), `DrawClip()`. Promoted from
-  `internal` to `public` so `RegisterStateDetector` is reachable from content-mod assemblies;
-  every other member stays `internal`.
+  by both attachment paths: `DetermineState()` (Idle/Walking/Attacking/Talk wired; Sitting
+  stubbed back to a TODO — see Known Gaps; SpecialIdle wired via `DetermineIdleState`, reusing
+  the same randomized-interval mechanism as Blink — `AnimationClip.IntervalMin`/`IntervalMax`,
+  `RollNextInterval` — applied to a true state instead of an overlay; `DetermineTalkingState`
+  likewise a true state now, not an overlay — see Baseline Animation Set), a public
+  `RegisterStateDetector` extension point (see `ANIMFRAMEWORK_NEW_FEATURES.md` §2), `PreDraw()`,
+  overlay activate/deactivate edge tracking (now just Blink — Talk's overlay case was removed),
+  `DrawClip()`. Promoted from `internal` to `public` so `RegisterStateDetector` is reachable
+  from content-mod assemblies; every other member stays `internal`.
 - `AnimFramework/Animation/AnimatedNPC.cs` — abstract base class (attachment path 1): per-type
   cached `AnimationSet`, per-instance `AnimationRuntime` rebuilt fresh on `Clone()` (fixes the
   MemberwiseClone shared-Stopwatch bug), `PreDraw` delegating to `AnimationController`,
@@ -324,25 +339,36 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
   `NPCID.Guide` via `AnimationRegistry.Register`, per the Registry attachment path (resolved
   decision: the POC targets the real vanilla Guide, not a from-scratch lookalike — see Rollout
   Plan below).
-- `GuideExpandedAnimations/Assets/Guide_Sheet.json` — 3 rows: `Idle` (4 frames, 32×48, 4fps,
-  `Loop`), `Walking` (row 1, 4 frames, 8fps, `Loop`), `Attacking` (row 2, 2 frames, 0.25s
-  duration, `Once`).
-- `GuideExpandedAnimations/Assets/Guide_Sheet.png` — **generated placeholder art** (simple
-  tinted humanoid silhouettes, one distinct tone per row: blue Idle bob, teal Walking
-  split-leg stride, red Attacking windup→strike), not real Guide sprite work. Swap this file
-  (and extend the JSON) for real art without touching any engine code.
+- `GuideExpandedAnimations/Assets/Guide_Sheet.json` — 5 rows, no overlays: `Idle` (4 frames,
+  32×48, 4fps, `Loop`), `Walking` (row 1, 8 frames, 8fps, `Loop`), `Attacking` (row 2, 2 frames,
+  0.1s duration, `Once`), `SpecialIdle` (row 3, 3 frames, 4fps, `Once`, `intervalMin`/
+  `intervalMax` 8–18s), `Talk` (row 4, 2 frames, 3fps, `Loop`).
+- `GuideExpandedAnimations/Assets/Guide_Sheet.png` — **generated placeholder art**, several
+  independently-authored passes merged together (blue Idle, green Walking, red Attacking, gold
+  SpecialIdle arm-raise, purple Talk gesture with a raised hand + mouth-open frame — full body,
+  not an overlay mark), not real Guide sprite work. Swap this file (and extend the JSON) for
+  real art without touching any engine code.
 
 **Known gaps against the current design discussion (not yet coded):**
-- Attack-state binding (types 0/1/2) and Sitting-state binding are now coded
-  (`AnimationController.DetermineAttackingState` / `DetermineSittingState`, plus
-  `TownNPCAttackProj`/`TownNPCAttackMagic` overrides on both attachment classes). The
-  `GlobalNPC`-side hook signatures are confirmed against docs.tmodloader.net directly; the
-  `NPC.sitting.isSitting` field name is inferred from the identical, confirmed `Player.sitting`
-  pattern rather than directly verified for 1.4.4, and the `ModNPC`-side hook overrides are
-  unverified by the same source — all three flagged in-code, expect a possible small fix at
-  first real Build+Reload. Melee (AttackType 3) remains explicitly unhandled — no confirmed hook
+- Attack-state binding (types 0/1/2) is coded and confirmed working
+  (`AnimationController.DetermineAttackingState`, plus `TownNPCAttackProj`/`TownNPCAttackMagic`
+  overrides on both attachment classes — `GlobalNPC`-side signatures confirmed directly against
+  docs.tmodloader.net; `ModNPC`-side signatures unverified by that same source, worth a
+  Build+Reload check). Melee (AttackType 3) remains explicitly unhandled — no confirmed hook
   exists for it. See `ANIMFRAMEWORK_NEW_FEATURES.md` §5/§6 for the full design.
-- SpecialIdle's random-chance-after-N-ticks logic — not implemented.
+- **Sitting-state binding — reverted back to unimplemented.** An earlier pass guessed
+  `npc.sitting.isSitting` by analogy with the confirmed `Player.sitting` field; that guess does
+  not compile (confirmed the hard way — a real Build+Reload error, `NPC` has no such member).
+  Re-checked directly against docs.tmodloader.net (both the `stable` and `1.4-preview` NPC class
+  references): the only sitting-related member exposed on `NPC` at all is `SitDown(Point
+  anchorTilePosition, out int direction, out Vector2 bottom)`, a helper vanilla uses to *compute
+  where to place* a sitting NPC, not something readable to check "is this NPC currently
+  sitting". `DetermineSittingState` is back to a documented no-op pending empirical testing
+  (spawn a town NPC on a bench, log its fields) rather than another guess.
+- SpecialIdle's occasional-variant logic — **now implemented**, in `DetermineIdleState`, reusing
+  Blink's randomized-interval mechanism (see above) rather than duplicating it. Talk's overlay
+  logic was already wired (`Main.LocalPlayer.talkNPC == NPC.whoAmI`); it previously had no
+  content authored (`overlays: []`) — it now does (see Guide_Sheet.json above).
 - Falling/Airborne — no confirmed vanilla signal; deliberately deferred (now a one-line addition
   via the detector-list pattern once a signal is confirmed — see `ANIMFRAMEWORK_NEW_FEATURES.md` §7).
 - Per-clip origin is wired into `AnimationClip`/`AnimationController.DrawClip` (unlike the

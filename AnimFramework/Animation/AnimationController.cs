@@ -87,6 +87,7 @@ namespace AnimFramework.Animation
                 return;
 
             runtime.AttackSignalAge.Restart();
+            runtime.AttackSignalId++;
         }
 
         // Loop-mode Attacking clips (channeled attacks) have no confirmed continuous "still
@@ -99,7 +100,8 @@ namespace AnimFramework.Animation
         // This is a *different* timing layer from the spec's "not tied to AttackTime" rule for
         // Once-mode clips below: that rule is about a clip's own per-frame playback timing;
         // this is about how long the higher-level Attacking *state* stays entered. Once-mode
-        // Attacking clips don't use this buffer at all — see below.
+        // Attacking clips only use this buffer to gate initial entry, never to re-affirm/hold —
+        // see DetermineAttackingState's AttackSignalId handling for why that distinction matters.
         private const double MinAttackSignalBufferSeconds = 0.2;
 
         private static double AttackSignalBufferSeconds(NPC npc)
@@ -110,16 +112,19 @@ namespace AnimFramework.Animation
 
         /// <summary>
         /// Default state-transition logic. Baseline set per ANIMFRAMEWORK_SPEC.md is Idle,
-        /// SpecialIdle, Walking, Attacking, Sitting. SpecialIdle has no vanilla signal to bind to
-        /// (framework-original random-chance logic, not yet written) and stays unwired; the rest
-        /// are live. Every check here degrades the same way: no clip authored for that state on
-        /// this NPC → skip it, never force it — see ANIMFRAMEWORK_NEW_FEATURES.md section 3.
+        /// SpecialIdle, Walking, Attacking, Sitting — all five are live now. Every check here
+        /// degrades the same way: no clip authored for that state on this NPC → skip it, never
+        /// force it — see ANIMFRAMEWORK_NEW_FEATURES.md section 3.
         /// </summary>
         private static string DetermineState(NPC npc, AnimationRuntime runtime)
         {
             AnimationSet set = runtime.Set;
 
             string state = DetermineAttackingState(npc, runtime, set);
+            if (state != null)
+                return state;
+
+            state = DetermineTalkingState(npc, set);
             if (state != null)
                 return state;
 
@@ -134,7 +139,44 @@ namespace AnimFramework.Animation
             if (npc.velocity != Vector2.Zero && set.States.ContainsKey("Walking"))
                 return "Walking";
 
-            return set.States.ContainsKey("Idle") ? "Idle" : null;
+            return DetermineIdleState(runtime, set);
+        }
+
+        /// <summary>
+        /// Idle, with the occasional SpecialIdle variant mixed in — framework-original logic,
+        /// no vanilla signal to bind to (per the spec's Baseline Animation Set). Reuses the same
+        /// randomized-interval mechanism as the Blink overlay (<see cref="RollNextInterval"/>,
+        /// <see cref="AnimationClip.IntervalMin"/>/<c>IntervalMax</c>) but applied to a true
+        /// state instead of an overlay: while otherwise idle, wait out a freshly-rolled interval
+        /// on a real-time clock, then switch in for one play-through. A Once-mode SpecialIdle
+        /// clip holds until <c>IsFinished</c> — same mechanic Attacking's Once-mode exit uses —
+        /// before falling back to plain Idle and rolling the next interval.
+        /// </summary>
+        private static string DetermineIdleState(AnimationRuntime runtime, AnimationSet set)
+        {
+            if (!set.States.ContainsKey("Idle"))
+                return null;
+
+            AnimationClip specialClip;
+            if (!set.States.TryGetValue("SpecialIdle", out specialClip))
+                return "Idle"; // not authored for this NPC — plain Idle only
+
+            if (runtime.CurrentState == "SpecialIdle" && !runtime.StatePlayer.IsFinished)
+                return "SpecialIdle"; // mid-playthrough — let it finish before re-rolling
+
+            if (!runtime.SpecialIdleClock.IsRunning)
+            {
+                runtime.SpecialIdleClock.Start();
+                runtime.NextSpecialIdleAt = RollNextInterval(specialClip);
+            }
+
+            if (runtime.SpecialIdleClock.Elapsed.TotalSeconds < runtime.NextSpecialIdleAt)
+                return "Idle";
+
+            // Window elapsed — fire once, then roll a fresh interval so multiple NPCs sharing
+            // this clip don't all play their SpecialIdle in lockstep (same reasoning as Blink).
+            runtime.NextSpecialIdleAt = runtime.SpecialIdleClock.Elapsed.TotalSeconds + RollNextInterval(specialClip);
+            return "SpecialIdle";
         }
 
         /// <summary>
@@ -154,10 +196,55 @@ namespace AnimFramework.Animation
             bool signalLive = runtime.AttackSignalAge.IsRunning
                 && runtime.AttackSignalAge.Elapsed.TotalSeconds <= AttackSignalBufferSeconds(npc);
 
-            if (runtime.CurrentState == "Attacking" && clip.Loop == LoopMode.Once)
-                return runtime.StatePlayer.IsFinished ? null : "Attacking";
+            if (clip.Loop == LoopMode.Once)
+            {
+                // Once-mode: consume each attack-start signal for exactly one playthrough, never
+                // re-enter off a signal already consumed. Bug this replaces: the buffer window
+                // above is sized for Loop-mode re-affirmation and is very often longer than a
+                // short punch/point-and-shoot clip's own duration (its floor alone, 0.2s, already
+                // outlasts e.g. a 0.1s clip) — checking signalLive here as originally written
+                // meant a single real attack could replay the clip several times before the
+                // buffer itself finally expired. AttackSignalId (bumped once per real
+                // NotifyAttackTriggered call) is what actually prevents that now.
+                if (runtime.CurrentState == "Attacking" && !runtime.StatePlayer.IsFinished)
+                    return "Attacking"; // still mid-playthrough
 
+                if (signalLive && runtime.AttackSignalId != runtime.LastConsumedAttackSignalId)
+                {
+                    runtime.LastConsumedAttackSignalId = runtime.AttackSignalId;
+                    return "Attacking";
+                }
+
+                return null;
+            }
+
+            // Loop-mode (channeled attacks): continuous re-affirmation is exactly what we want —
+            // stay Attacking for as long as trigger pulses keep arriving, exit shortly after they
+            // stop (AttackSignalBufferSeconds).
             return signalLive ? "Attacking" : null;
+        }
+
+        /// <summary>
+        /// Talk — a real mutually-exclusive state, not an overlay. Revised from the original
+        /// spec's overlay-based design: a small mark layered on top of whatever pose was active
+        /// worked for a simple mouth-flap, but couldn't express a full bodily talking animation
+        /// (a gesture, a distinct stance) without the underlying pose fighting it. As a state, a
+        /// content mod's Talk clip is a full sprite like any other, author-chosen Loop or Once
+        /// like every other row — no special-casing here beyond the trigger check itself.
+        /// Trigger: <c>Main.LocalPlayer.talkNPC == npc.whoAmI</c> — confirmed, but only covers
+        /// the player-has-this-NPC's-dialog-open case. The other case (vanilla's ambient
+        /// NPC-to-NPC "emote bubble" chatter, via <c>ModEmoteBubble</c>/<c>EmoteBubbleLoader</c>
+        /// — confirmed to exist, per docs.tmodloader.net) is NOT wired here yet: the exact way
+        /// to read "does this NPC currently have an active emote bubble" from PreDraw isn't
+        /// confirmed, and guessing it would repeat the exact mistake Sitting's first attempt
+        /// made. Ranked above Sitting/registered detectors/Walking — a player mid-dialog with
+        /// this NPC shouldn't flicker back to Walking/Idle off residual velocity.
+        /// </summary>
+        private static string DetermineTalkingState(NPC npc, AnimationSet set)
+        {
+            if (set.States.ContainsKey("Talk") && Main.LocalPlayer.talkNPC == npc.whoAmI)
+                return "Talk";
+            return null;
         }
 
         /// <summary>
@@ -188,11 +275,12 @@ namespace AnimFramework.Animation
             return null;
         }
 
-        // Blink's own randomized-interval jitter (see RollNextBlinkDelay) — the bounds
-        // themselves come from the clip (AnimationClip.IntervalMin/Max, declarable per-overlay
-        // via the JSON's intervalMin/intervalMax, defaulting when unset — see
-        // ANIMFRAMEWORK_NEW_FEATURES.md section 4), not from a framework-wide constant.
-        private static readonly Random _blinkJitter = new Random();
+        // Shared randomized-interval jitter for every timed feature reading a clip's
+        // IntervalMin/Max (declarable per-row/overlay via the JSON's intervalMin/intervalMax,
+        // defaulting when unset — see ANIMFRAMEWORK_NEW_FEATURES.md section 4): Blink below, and
+        // DetermineIdleState's SpecialIdle timer above. One shared Random rather than one per
+        // feature — same roll math either way, no reason to duplicate the RNG instance.
+        private static readonly Random _intervalJitter = new Random();
 
         private static void DrawOverlays(NPC npc, AnimationRuntime runtime, SpriteBatch spriteBatch, Vector2 screenPos, Color drawColor)
         {
@@ -226,15 +314,14 @@ namespace AnimFramework.Animation
 
         /// <summary>
         /// Whether a given overlay should currently be drawn. Layered on top of the current
-        /// state's frame as a second draw call, not a replacement of it — matches the "layered"
-        /// resolution of the Talk overlay's replace-vs-layer open question in the spec.
+        /// state's frame as a second draw call, not a replacement of it. Talk used to be a case
+        /// here (a small mark, condition-driven off the same talkNPC check DetermineTalkingState
+        /// uses above) — moved to a real state instead, see that method's doc comment for why.
         /// </summary>
         private static bool ShouldDrawOverlay(NPC npc, AnimationRuntime runtime, AnimationClip overlay)
         {
             switch (overlay.State)
             {
-                case "Talk":
-                    return Main.LocalPlayer.talkNPC == npc.whoAmI;
                 case "Blink":
                     return ShouldBlink(runtime, overlay);
                 default:
@@ -243,12 +330,11 @@ namespace AnimFramework.Animation
         }
 
         /// <summary>
-        /// Condition overlay vs. timed overlay (see the taxonomy in
-        /// ANIMFRAMEWORK_NEW_FEATURES.md section 1): Talk above is condition-driven (an external
-        /// fact is checked each frame); Blink is time-driven — it fires on its own internal
-        /// clock, independent of anything vanilla exposes. A multi-frame Once-mode Blink clip
-        /// naturally plays through once per firing (closing → closed → opening) via the same
-        /// IsFinished mechanics every other Once-mode clip uses; a single-frame Blink clip
+        /// Timed overlay (see the taxonomy in ANIMFRAMEWORK_NEW_FEATURES.md section 1): fires on
+        /// its own internal clock, independent of anything vanilla exposes. A multi-frame
+        /// Once-mode Blink clip naturally plays through once per firing (closing → closed →
+        /// opening) via the same IsFinished mechanics every other Once-mode clip uses; a
+        /// single-frame Blink clip
         /// finishes (and so is visible for) exactly one draw call, which is a legitimate, if
         /// blunt, authoring choice.
         /// </summary>
@@ -257,7 +343,7 @@ namespace AnimFramework.Animation
             if (!runtime.BlinkClock.IsRunning)
             {
                 runtime.BlinkClock.Start();
-                runtime.NextBlinkAt = RollNextBlinkDelay(overlay);
+                runtime.NextBlinkAt = RollNextInterval(overlay);
             }
 
             AnimationPlayer player;
@@ -273,16 +359,16 @@ namespace AnimFramework.Animation
 
             // Window elapsed — fire once, then roll a fresh randomized interval so multiple NPCs
             // sharing this clip don't all blink in lockstep.
-            runtime.NextBlinkAt = now + RollNextBlinkDelay(overlay);
+            runtime.NextBlinkAt = now + RollNextInterval(overlay);
             return true;
         }
 
-        private static double RollNextBlinkDelay(AnimationClip overlay)
+        private static double RollNextInterval(AnimationClip clip)
         {
             // IntervalMin == IntervalMax (author declared a fixed interval, or declared neither
             // and got the framework default range) still works fine here — NextDouble() * 0 is
             // just 0, so the roll collapses to that single value with no special-casing needed.
-            return overlay.IntervalMin + _blinkJitter.NextDouble() * (overlay.IntervalMax - overlay.IntervalMin);
+            return clip.IntervalMin + _intervalJitter.NextDouble() * (clip.IntervalMax - clip.IntervalMin);
         }
 
         private static void DrawClip(NPC npc, AnimationClip clip, AnimationPlayer player, SpriteBatch spriteBatch, Vector2 screenPos, Color drawColor)
