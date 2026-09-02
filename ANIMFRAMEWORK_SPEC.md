@@ -177,10 +177,16 @@ signal exists:
   - **For attack type 3 (melee)**: no matching documented hook found. Genuine unknown — needs
     direct empirical testing (spawn a melee-attacking town NPC, log field/hook behavior) before
     building assumptions for this category.
-  - Exact hook method names/signatures (`TownNPCAttackProj` and similar) were found via search
-    snippet paraphrase only — **not confirmed against a live API reference**. Must be verified
-    directly against `docs.tmodloader.net`'s ModNPC/GlobalNPC reference before coding against
-    them for real.
+  - **Resolved / confirmed directly against tModLoader's own source** (`GlobalNPC.cs` /
+    `ModNPC.cs`, via GitHub, superseding the earlier paraphrase-only note): both classes expose
+    `TownNPCAttackProj(ref int projType, ref int attackDelay)` (`ModNPC`) /
+    `TownNPCAttackProj(NPC npc, ref int projType, ref int attackDelay)` (`GlobalNPC`), doc-commented
+    as firing once per attack for AttackType 0/1/2 (throw/shoot/magic) — exactly Guide's case
+    (shooting). There is no dedicated "is currently attacking" flag hook; `TownNPCAttackProj`
+    firing *is* the real "an attack just started" edge, used purely as an observation trigger
+    (`ref` params never touched, vanilla's own attack timing/projectile is untouched) —
+    implemented as `AnimationController.TriggerAttack`, called from both attachment paths. Melee
+    (type 3) remains the one unconfirmed case per the note above.
 
 **Observed vanilla frame-count-by-attack-type convention** (useful default assumption per type,
 not a hard framework rule):
@@ -277,19 +283,24 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
   state player, overlay players/active-set). Must be freshly built per NPC instance — see the
   `Clone()` overrides below.
 - `AnimFramework/Animation/AnimationController.cs` — the shared state-machine + draw logic used
-  by both attachment paths: `DetermineState()` (Idle/Walking wired; Attacking/Sitting/SpecialIdle
-  are marked `TODO` pending the still-unconfirmed vanilla hooks), `PreDraw()`, overlay
+  by both attachment paths: `DetermineState()` (Idle/Walking wired off `npc.velocity`; Attacking
+  wired off `TriggerAttack` staying active until its `Once`-mode clip's `IsFinished` flips true;
+  Sitting/SpecialIdle remain `TODO`), `TriggerAttack()` (force-enters Attacking from a real
+  attack-start signal — see `AnimatedGlobalNPC`/`AnimatedNPC` below), `PreDraw()`, overlay
   activate/deactivate edge tracking, `DrawClip()`.
 - `AnimFramework/Animation/AnimatedNPC.cs` — abstract base class (attachment path 1): per-type
   cached `AnimationSet`, per-instance `AnimationRuntime` rebuilt fresh on `Clone()` (fixes the
-  MemberwiseClone shared-Stopwatch bug), `PreDraw` delegating to `AnimationController`.
+  MemberwiseClone shared-Stopwatch bug), `PreDraw` delegating to `AnimationController`,
+  `TownNPCAttackProj` override calling `AnimationController.TriggerAttack` (observation only —
+  `projType`/`attackDelay` untouched).
 - `AnimFramework/Animation/AnimationRegistry.cs` — static `Dictionary<int, Lazy<AnimationSet>>`
   mapping NPC type → lazily-built, cached animation set. `Register`, `Unregister`, `TryGet`,
   `IsRegistered`.
 - `AnimFramework/Animation/AnimatedGlobalNPC.cs` — attachment path 2: `GlobalNPC` with
   `InstancePerEntity = true`; `AppliesToEntity` gated on `AnimationRegistry` membership
   (opt-in, not global); same Clone-safety fix as `AnimatedNPC`; delegates to the same
-  `AnimationController` as the base-class path (no duplicated state/draw logic between the two).
+  `AnimationController` as the base-class path (no duplicated state/draw logic between the two);
+  same `TownNPCAttackProj` override as `AnimatedNPC`.
 - `AnimFramework/Animation/SheetLayoutLoader.cs` — `SheetDefinition`/`SheetRowDefinition` JSON
   schema classes, `System.Text.Json`-based loader (via `Mod.GetFileBytes`), with the defensive
   handling described above; converts a parsed sheet definition into an `AnimationSet`.
@@ -301,17 +312,20 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
   `NPCID.Guide` via `AnimationRegistry.Register`, per the Registry attachment path (resolved
   decision: the POC targets the real vanilla Guide, not a from-scratch lookalike — see Rollout
   Plan below).
-- `GuideExpandedAnimations/Assets/Guide_Sheet.json` — Idle-only layout (POC scope): 4 frames,
-  32×48, 4 fps, `Loop`.
-- `GuideExpandedAnimations/Assets/Guide_Sheet.png` — **generated placeholder art** (a simple
-  tinted humanoid silhouette with a per-frame bob), not real Guide sprite work. Swap this file
+- `GuideExpandedAnimations/Assets/Guide_Sheet.json` — 3 rows: `Idle` (4 frames, 32×48, 4fps,
+  `Loop`), `Walking` (row 1, 4 frames, 8fps, `Loop`), `Attacking` (row 2, 2 frames, 0.25s
+  duration, `Once`).
+- `GuideExpandedAnimations/Assets/Guide_Sheet.png` — **generated placeholder art** (simple
+  tinted humanoid silhouettes, one distinct tone per row: blue Idle bob, teal Walking
+  split-leg stride, red Attacking windup→strike), not real Guide sprite work. Swap this file
   (and extend the JSON) for real art without touching any engine code.
 
 **Known gaps against the current design discussion (not yet coded):**
-- Attack-state binding to the real vanilla shoot/throw/magic hooks, and Sitting-state binding
-  to `NPC.sitting` — both left as explicit `TODO`s in `AnimationController.DetermineState`
-  pending confirmation against a live API reference (melee attack type especially — still a
-  genuine unknown per the Vanilla Compatibility section above).
+- Sitting-state binding to `NPC.sitting` — left as an explicit `TODO` in
+  `AnimationController.DetermineState` pending confirmation against a live API reference.
+  Attacking is now wired for AttackType 0/1/2 (throw/shoot/magic) via `TownNPCAttackProj`
+  (confirmed against tModLoader's own source — see Vanilla Compatibility above); melee (type 3)
+  still has no confirmed hook and remains unwired.
 - SpecialIdle's random-chance-after-N-ticks logic — not implemented.
 - Per-clip origin is wired into `AnimationClip`/`AnimationController.DrawClip` (unlike the
   original design-only note); per-frame origin overrides remain out of scope, as designed.
