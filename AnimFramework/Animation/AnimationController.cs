@@ -161,18 +161,19 @@ namespace AnimFramework.Animation
         }
 
         /// <summary>
-        /// NPC.sitting.isSitting — vanilla's own town-NPC sitting struct (bench/chair
-        /// interactions, added 1.4.4). Not directly confirmed against 1.4.4 source, but
-        /// `Player.sitting` is confirmed (decompiled 1.4.0.5 source: `public PlayerSittingHelper
-        /// sitting;`, read as `sitting.isSitting`) — town-NPC chair-sitting, added later, is very
-        /// likely the same field/shape mirrored onto NPC rather than a new pattern. Still worth
-        /// verifying at first Build+Reload (see ANIMFRAMEWORK_SPEC.md's Vanilla Compatibility
-        /// section) in case the field or type name differs.
+        /// TODO: Sitting is not wired yet. The previous attempt guessed `npc.sitting.isSitting`
+        /// by analogy with the confirmed `Player.sitting` field — that guess does not compile
+        /// (`NPC` has no such member). Re-checked directly against docs.tmodloader.net (both the
+        /// `stable` and `1.4-preview` NPC class references): the only sitting-related member
+        /// exposed on `NPC` at all is `SitDown(Point anchorTilePosition, out int direction, out
+        /// Vector2 bottom)`, which is a helper vanilla uses to *compute where to place* a sitting
+        /// NPC — not a state you can read to check "is this NPC currently sitting". No public
+        /// field/property for that was found. Needs empirical testing (spawn a town NPC on a
+        /// bench, log its fields) rather than another guess — see ANIMFRAMEWORK_SPEC.md's
+        /// Vanilla Compatibility section.
         /// </summary>
         private static string DetermineSittingState(NPC npc, AnimationSet set)
         {
-            if (npc.sitting.isSitting && set.States.ContainsKey("Sitting"))
-                return "Sitting";
             return null;
         }
 
