@@ -25,10 +25,27 @@ namespace AnimFramework.Animation
         public LoopMode Loop { get; }
         public Vector2? Origin { get; }
 
+        /// <summary>
+        /// Resolved bounds (seconds) for how often a timed-trigger feature reading this clip
+        /// should fire — e.g. the Blink overlay's own internal clock (see
+        /// <c>AnimationController.ShouldBlink</c>). Meaningless for anything that isn't
+        /// timer-driven; harmless to ignore. Always a valid, non-crossed range — see the
+        /// resolution rule in the constructor.
+        /// </summary>
+        public float IntervalMin { get; }
+        public float IntervalMax { get; }
+
+        // Only used when a clip declares neither intervalMin nor intervalMax — same role as the
+        // 1f fallback for Fps/Duration below: a sane default for the common "didn't think about
+        // it" case, not a value any author is expected to actually want tuned.
+        private const float DefaultIntervalMinSeconds = 2.5f;
+        private const float DefaultIntervalMaxSeconds = 6f;
+
         private Asset<Texture2D> _texture;
 
         public AnimationClip(string state, string texturePath, int frameWidth, int frameHeight, int frameCount,
-            int row, float fps, float duration, LoopMode loop, Vector2? origin = null)
+            int row, float fps, float duration, LoopMode loop, Vector2? origin = null,
+            float? intervalMin = null, float? intervalMax = null)
         {
             if (frameCount <= 0)
                 throw new ArgumentOutOfRangeException(nameof(frameCount), "AnimationClip requires at least 1 frame.");
@@ -61,6 +78,33 @@ namespace AnimFramework.Animation
                 // rather than a divide-by-zero later in AnimationPlayer.
                 Fps = 1f;
                 Duration = frameCount;
+            }
+
+            // Same three-tier rule as everything else optional on a clip: undeclared row = the
+            // feature this drives (e.g. Blink) never fires at all — that's decided upstream by
+            // whether a clip exists for that overlay/state in the first place, not here. Given a
+            // clip, both bounds declared = respected exactly (swapped if authored backwards,
+            // same "never crash on bad JSON" spirit as the loop-mode/row-bounds handling in
+            // SheetLayoutLoader). Exactly one bound declared = treated as a fixed, non-jittered
+            // interval at that value, rather than silently blending an author's number with an
+            // arbitrary framework default. Neither declared = the framework default range.
+            if (intervalMin.HasValue && intervalMax.HasValue)
+            {
+                IntervalMin = Math.Min(intervalMin.Value, intervalMax.Value);
+                IntervalMax = Math.Max(intervalMin.Value, intervalMax.Value);
+            }
+            else if (intervalMin.HasValue)
+            {
+                IntervalMin = IntervalMax = intervalMin.Value;
+            }
+            else if (intervalMax.HasValue)
+            {
+                IntervalMin = IntervalMax = intervalMax.Value;
+            }
+            else
+            {
+                IntervalMin = DefaultIntervalMinSeconds;
+                IntervalMax = DefaultIntervalMaxSeconds;
             }
         }
 

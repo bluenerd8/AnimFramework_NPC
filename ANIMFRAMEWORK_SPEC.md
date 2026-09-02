@@ -82,6 +82,12 @@ framework.)
   origin would cause visible drift/misalignment against the hitbox as frames change.
   - Per-frame (not just per-clip) origin override identified as a possible future escape hatch
     if a specific animation's asymmetry changes frame-to-frame, but not needed for v1.
+- **Declarable per-clip timer interval** (`intervalMin`/`intervalMax`, seconds), for timed
+  overlays like Blink — see `ANIMFRAMEWORK_NEW_FEATURES.md` §4. Same three-tier fallback as the
+  rest of this section: no clip authored → the feature never fires at all (decided upstream by
+  whether the clip exists); clip authored with neither field → framework default range; one or
+  both declared → the author's numbers win (one alone = a fixed, non-jittered interval; both
+  swapped automatically, with a load-time warning, if authored backwards).
 
 ### JSON Schema (conceptual shape)
 ```json
@@ -97,12 +103,16 @@ framework.)
     { "state": "Sitting",     "row": 4, "frameCount": 4,  "fps": 4,  "loop": "PingPong" }
   ],
   "overlays": [
-    { "state": "Talk", "row": 5, "frameCount": 1 }
+    { "state": "Talk", "row": 5, "frameCount": 1 },
+    { "state": "Blink", "row": 6, "frameCount": 3, "fps": 12, "loop": "Once",
+      "intervalMin": 2, "intervalMax": 5 }
   ]
 }
 ```
 (`fps` vs `duration` per row is either/or; loader derives whichever wasn't given. Frame count
-is always required — it's what tells the reader how many columns to step through in that row.)
+is always required — it's what tells the reader how many columns to step through in that row.
+`intervalMin`/`intervalMax` are optional and only meaningful for timed-trigger overlays like
+Blink — omit both for the framework default, declare either or both to override it.)
 
 ---
 
@@ -149,9 +159,9 @@ signal exists:
 - **Talk overlay** — `Main.LocalPlayer.talkNPC == NPC.whoAmI`. Direct, reliable.
 - **Sitting** — vanilla has native town-NPC sitting support (added 1.4.4, bench/chair
   interactions) with an `NPC.sitting` struct including an "is currently sitting" flag —
-  preferred over guessing from zero-velocity-near-furniture. **Still not confirmed against a
-  live API reference** — exact field name unverified, so `DetermineState()` does not reference
-  it yet (see Implementation Status).
+  preferred over guessing from zero-velocity-near-furniture. Now wired as `NPC.sitting.isSitting`
+  in `AnimationController.DetermineSittingState`, but the field name is **still not confirmed
+  against a live API reference** — verify at first Build+Reload (see Implementation Status).
 - **Idle / SpecialIdle** — no vanilla-native equivalent concept; stays framework-original logic.
   Idle is effectively the fallback default when no other state applies.
 - **Attacking** — confirmed via `NPCID.Sets` fields and hooks, **not uniform across all NPCs**:
@@ -176,17 +186,14 @@ signal exists:
     it into the body row sheet.
   - **For attack type 3 (melee)**: no matching documented hook found. Genuine unknown — needs
     direct empirical testing (spawn a melee-attacking town NPC, log field/hook behavior) before
-    building assumptions for this category.
-  - **Resolved / confirmed directly against tModLoader's own source** (`GlobalNPC.cs` /
-    `ModNPC.cs`, via GitHub, superseding the earlier paraphrase-only note): both classes expose
-    `TownNPCAttackProj(ref int projType, ref int attackDelay)` (`ModNPC`) /
-    `TownNPCAttackProj(NPC npc, ref int projType, ref int attackDelay)` (`GlobalNPC`), doc-commented
-    as firing once per attack for AttackType 0/1/2 (throw/shoot/magic) — exactly Guide's case
-    (shooting). There is no dedicated "is currently attacking" flag hook; `TownNPCAttackProj`
-    firing *is* the real "an attack just started" edge, used purely as an observation trigger
-    (`ref` params never touched, vanilla's own attack timing/projectile is untouched) —
-    implemented as `AnimationController.TriggerAttack`, called from both attachment paths. Melee
-    (type 3) remains the one unconfirmed case per the note above.
+    building assumptions for this category. Deliberately left unwired in code (see
+    `ANIMFRAMEWORK_NEW_FEATURES.md` §5).
+  - `TownNPCAttackProj(NPC npc, ref int projType, ref int attackDelay)` (types 0/1) and
+    `TownNPCAttackMagic(NPC npc, ref float auraLightMultiplier)` (type 2) — **confirmed directly
+    against `docs.tmodloader.net`'s GlobalNPC class reference** (1.4-stable), now wired in
+    `AnimationController`/`AnimatedGlobalNPC`/`AnimatedNPC`. The matching `ModNPC`-side overrides
+    (same names, no leading `NPC npc` parameter) are unverified by that same source and should
+    still be checked at first Build+Reload.
 
 **Observed vanilla frame-count-by-attack-type convention** (useful default assumption per type,
 not a hard framework rule):
@@ -252,9 +259,13 @@ Distinguish between two categories:
     default (1 fps) rather than dividing by zero.
   - Unrecognized loop mode string (typo) — handled: `SheetLayoutLoader` logs a warning and
     defaults to `Loop` rather than throwing during deserialization.
-  - Declared row index beyond the actual sheet's pixel height — handled: `SheetLayoutLoader`
-    bounds-checks each row against the loaded texture's actual height, logs an error, and skips
-    that row rather than silently reading garbage/out-of-bounds pixels.
+  - Declared row index beyond the actual sheet's pixel height, or a `frameCount` wider than the
+    sheet's actual pixel width — both handled: `SheetLayoutLoader` bounds-checks each row
+    against the loaded texture's real dimensions on both axes, logs an error, and skips that row
+    rather than silently reading garbage/out-of-bounds pixels. The width check is against the
+    sheet's actual width, not any other row's frame count — rows are free to use fewer frames
+    than the sheet's widest row (e.g. a 2-frame Attacking row sharing a sheet with an 8-frame
+    Walking row).
   - Missing required state (e.g. no `Idle` row) — handled by design: `AnimationController.PreDraw`
     falls back to vanilla drawing (`return true`) whenever the current state has no registered
     clip.
@@ -283,11 +294,12 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
   state player, overlay players/active-set). Must be freshly built per NPC instance — see the
   `Clone()` overrides below.
 - `AnimFramework/Animation/AnimationController.cs` — the shared state-machine + draw logic used
-  by both attachment paths: `DetermineState()` (Idle/Walking wired off `npc.velocity`; Attacking
-  wired off `TriggerAttack` staying active until its `Once`-mode clip's `IsFinished` flips true;
-  Sitting/SpecialIdle remain `TODO`), `TriggerAttack()` (force-enters Attacking from a real
-  attack-start signal — see `AnimatedGlobalNPC`/`AnimatedNPC` below), `PreDraw()`, overlay
-  activate/deactivate edge tracking, `DrawClip()`.
+  by both attachment paths: `DetermineState()` (Idle/Walking/Sitting/Attacking wired;
+  SpecialIdle still not — see Known Gaps), a public `RegisterStateDetector` extension point
+  (see `ANIMFRAMEWORK_NEW_FEATURES.md` §2), `PreDraw()`, overlay activate/deactivate edge
+  tracking (including the Blink timed overlay, §4 of the same doc), `DrawClip()`. Promoted from
+  `internal` to `public` so `RegisterStateDetector` is reachable from content-mod assemblies;
+  every other member stays `internal`.
 - `AnimFramework/Animation/AnimatedNPC.cs` — abstract base class (attachment path 1): per-type
   cached `AnimationSet`, per-instance `AnimationRuntime` rebuilt fresh on `Clone()` (fixes the
   MemberwiseClone shared-Stopwatch bug), `PreDraw` delegating to `AnimationController`,
@@ -321,12 +333,18 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
   (and extend the JSON) for real art without touching any engine code.
 
 **Known gaps against the current design discussion (not yet coded):**
-- Sitting-state binding to `NPC.sitting` — left as an explicit `TODO` in
-  `AnimationController.DetermineState` pending confirmation against a live API reference.
-  Attacking is now wired for AttackType 0/1/2 (throw/shoot/magic) via `TownNPCAttackProj`
-  (confirmed against tModLoader's own source — see Vanilla Compatibility above); melee (type 3)
-  still has no confirmed hook and remains unwired.
+- Attack-state binding (types 0/1/2) and Sitting-state binding are now coded
+  (`AnimationController.DetermineAttackingState` / `DetermineSittingState`, plus
+  `TownNPCAttackProj`/`TownNPCAttackMagic` overrides on both attachment classes). The
+  `GlobalNPC`-side hook signatures are confirmed against docs.tmodloader.net directly; the
+  `NPC.sitting.isSitting` field name is inferred from the identical, confirmed `Player.sitting`
+  pattern rather than directly verified for 1.4.4, and the `ModNPC`-side hook overrides are
+  unverified by the same source — all three flagged in-code, expect a possible small fix at
+  first real Build+Reload. Melee (AttackType 3) remains explicitly unhandled — no confirmed hook
+  exists for it. See `ANIMFRAMEWORK_NEW_FEATURES.md` §5/§6 for the full design.
 - SpecialIdle's random-chance-after-N-ticks logic — not implemented.
+- Falling/Airborne — no confirmed vanilla signal; deliberately deferred (now a one-line addition
+  via the detector-list pattern once a signal is confirmed — see `ANIMFRAMEWORK_NEW_FEATURES.md` §7).
 - Per-clip origin is wired into `AnimationClip`/`AnimationController.DrawClip` (unlike the
   original design-only note); per-frame origin overrides remain out of scope, as designed.
 - Triggered/one-shot secondary effect system (attack-gust style) — explicitly deferred, no code
