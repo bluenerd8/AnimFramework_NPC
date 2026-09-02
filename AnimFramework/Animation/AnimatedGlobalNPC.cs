@@ -39,6 +39,21 @@ namespace AnimFramework.Animation
             return AnimationController.PreDraw(npc, runtime, spriteBatch, screenPos, drawColor);
         }
 
+        // Attacking-state trigger for AttackType 0 (throw) and 1 (shoot) — see
+        // AnimationController.NotifyAttackTriggered for why this hook is safe to observe
+        // without touching its ref parameters, and why melee (type 3) has no equivalent here.
+        // Signature confirmed against docs.tmodloader.net's GlobalNPC reference (1.4-stable).
+        public override void TownNPCAttackProj(NPC npc, ref int projType, ref int attackDelay)
+        {
+            AnimationController.NotifyAttackTriggered(npc, GetRuntime(npc));
+        }
+
+        // Attacking-state trigger for AttackType 2 (magic) — same caveats as TownNPCAttackProj above.
+        public override void TownNPCAttackMagic(NPC npc, ref float auraLightMultiplier)
+        {
+            AnimationController.NotifyAttackTriggered(npc, GetRuntime(npc));
+        }
+
         // Same MemberwiseClone shared-state hazard as AnimatedNPC.Clone (see its comment) —
         // without this, every NPC instance of a registered type would share one Stopwatch.
         public override GlobalNPC Clone(NPC from, NPC to)

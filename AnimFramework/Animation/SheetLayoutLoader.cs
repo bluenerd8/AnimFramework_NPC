@@ -29,6 +29,15 @@ namespace AnimFramework.Animation
         public string Loop { get; set; }
         public float? OriginX { get; set; }
         public float? OriginY { get; set; }
+
+        /// <summary>
+        /// Bounds (seconds) for a timed-trigger feature reading this clip, e.g. Blink's own
+        /// internal clock — see <see cref="AnimationClip.IntervalMin"/>/<c>IntervalMax</c> for
+        /// the fallback rule when one or both are left unset. Meaningless (and ignored) for
+        /// rows/overlays nothing timer-driven reads.
+        /// </summary>
+        public float? IntervalMin { get; set; }
+        public float? IntervalMax { get; set; }
     }
 
     /// <summary>
@@ -56,15 +65,16 @@ namespace AnimFramework.Animation
                     $"AnimFramework: '{jsonAssetPath}' is missing or has no texturePath.");
 
             // Loaded (and kept loaded, ImmediateLoad) up front purely to read its real pixel
-            // height for the row-bounds check below; AnimationClip.GetTexture() requests the
-            // same path again later for drawing, which tModLoader's asset system dedupes.
+            // dimensions for the row-bounds checks below; AnimationClip.GetTexture() requests
+            // the same path again later for drawing, which tModLoader's asset system dedupes.
             Asset<Texture2D> texture = ModContent.Request<Texture2D>(def.TexturePath, AssetRequestMode.ImmediateLoad);
+            int sheetWidth = texture.Value.Width;
             int sheetHeight = texture.Value.Height;
 
             var states = new Dictionary<string, AnimationClip>();
             foreach (SheetRowDefinition row in def.Rows ?? new List<SheetRowDefinition>())
             {
-                AnimationClip clip = BuildClip(mod, jsonAssetPath, def, row, sheetHeight);
+                AnimationClip clip = BuildClip(mod, jsonAssetPath, def, row, sheetWidth, sheetHeight);
                 if (clip != null)
                     states[row.State] = clip;
             }
@@ -72,7 +82,7 @@ namespace AnimFramework.Animation
             var overlays = new List<AnimationClip>();
             foreach (SheetRowDefinition row in def.Overlays ?? new List<SheetRowDefinition>())
             {
-                AnimationClip clip = BuildClip(mod, jsonAssetPath, def, row, sheetHeight);
+                AnimationClip clip = BuildClip(mod, jsonAssetPath, def, row, sheetWidth, sheetHeight);
                 if (clip != null)
                     overlays.Add(clip);
             }
@@ -80,7 +90,7 @@ namespace AnimFramework.Animation
             return new AnimationSet(states, overlays);
         }
 
-        private static AnimationClip BuildClip(Mod mod, string jsonAssetPath, SheetDefinition def, SheetRowDefinition row, int sheetHeight)
+        private static AnimationClip BuildClip(Mod mod, string jsonAssetPath, SheetDefinition def, SheetRowDefinition row, int sheetWidth, int sheetHeight)
         {
             if (string.IsNullOrEmpty(row.State) || row.FrameCount <= 0)
             {
@@ -88,13 +98,24 @@ namespace AnimFramework.Animation
                 return null;
             }
 
-            // The nastiest failure mode per spec: a row past the sheet's actual pixel height
-            // doesn't crash, it silently reads garbage/out-of-bounds pixels. Bounds-check
-            // explicitly instead of letting that happen quietly.
+            // The nastiest failure mode per spec: a row past the sheet's actual pixel bounds
+            // doesn't crash, it silently reads garbage/out-of-bounds pixels. Bounds-check both
+            // axes explicitly instead of letting that happen quietly — height catches a bad
+            // `row` index, width catches a `frameCount` wider than the sheet actually is (rows
+            // are free to use fewer frames than the sheet's widest row, e.g. a 2-frame Attacking
+            // row sharing a sheet with an 8-frame Walking row, so this checks against the
+            // sheet's real width, not some other row's frameCount).
             int rowBottom = (row.Row + 1) * def.FrameHeight;
             if (rowBottom > sheetHeight)
             {
                 mod.Logger.Error($"AnimFramework: '{jsonAssetPath}' row '{row.State}' (row {row.Row}) reads past the sheet's height ({rowBottom}px > {sheetHeight}px) — skipped.");
+                return null;
+            }
+
+            int rowRight = row.FrameCount * def.FrameWidth;
+            if (rowRight > sheetWidth)
+            {
+                mod.Logger.Error($"AnimFramework: '{jsonAssetPath}' row '{row.State}' declares {row.FrameCount} frames wider than the sheet ({rowRight}px > {sheetWidth}px) — skipped.");
                 return null;
             }
 
@@ -110,9 +131,13 @@ namespace AnimFramework.Animation
                 ? new Vector2(row.OriginX.Value, row.OriginY.Value)
                 : (Vector2?)null;
 
+            if (row.IntervalMin.HasValue && row.IntervalMax.HasValue && row.IntervalMin.Value > row.IntervalMax.Value)
+                mod.Logger.Warn($"AnimFramework: '{jsonAssetPath}' row '{row.State}' has intervalMin > intervalMax — swapped rather than treated as an error.");
+
             return new AnimationClip(
                 row.State, def.TexturePath, def.FrameWidth, def.FrameHeight, row.FrameCount,
-                row.Row, row.Fps ?? 0f, row.Duration ?? 0f, loop, origin);
+                row.Row, row.Fps ?? 0f, row.Duration ?? 0f, loop, origin,
+                row.IntervalMin, row.IntervalMax);
         }
     }
 }
