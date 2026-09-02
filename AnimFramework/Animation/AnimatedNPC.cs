@@ -48,11 +48,19 @@ namespace AnimFramework.Animation
             return AnimationController.PreDraw(NPC, Runtime, spriteBatch, screenPos, drawColor);
         }
 
-        // Same real attack-start signal as AnimatedGlobalNPC.TownNPCAttackProj, for NPCs built
-        // on this base class instead of the registry path. Observation only.
+        // Same Attacking-state trigger as AnimatedGlobalNPC — see its copy of these overrides
+        // for the caveats (AttackType 0/1/2 only). Unlike the GlobalNPC-side signatures, this
+        // ModNPC-side signature (mirroring the GlobalNPC one minus the leading NPC parameter,
+        // per the existing PreDraw convention in this codebase) is not directly confirmed
+        // against docs.tmodloader.net — worth a Build+Reload check.
         public override void TownNPCAttackProj(ref int projType, ref int attackDelay)
         {
-            AnimationController.TriggerAttack(Runtime);
+            AnimationController.NotifyAttackTriggered(NPC, Runtime);
+        }
+
+        public override void TownNPCAttackMagic(ref float auraLightMultiplier)
+        {
+            AnimationController.NotifyAttackTriggered(NPC, Runtime);
         }
 
         // Without this, tModLoader's default MemberwiseClone would copy our _runtime reference
