@@ -18,7 +18,7 @@ namespace AnimFramework.Animation
             if (runtime == null || runtime.Set == null)
                 return true;
 
-            string state = DetermineState(npc, runtime.Set);
+            string state = DetermineState(npc, runtime);
             AnimationClip clip;
             if (state == null || !runtime.Set.States.TryGetValue(state, out clip))
                 return true; // current state has no registered clip — fall back to vanilla
@@ -36,14 +36,37 @@ namespace AnimFramework.Animation
         }
 
         /// <summary>
-        /// Default state-transition logic. Baseline set per ANIMFRAMEWORK_SPEC.md is Idle,
-        /// SpecialIdle, Walking, Attacking, Sitting — only Idle/Walking are wired so far
-        /// (rollout step 1: prove real-time playback/rendering before adding the rest).
+        /// Called from a real vanilla attack-start signal — <c>TownNPCAttackProj</c>, confirmed
+        /// against tModLoader's own source (see ANIMFRAMEWORK_SPEC.md's Vanilla Compatibility
+        /// section) to fire once per attack for AttackType 0/1/2 (throwing/shooting/magic) — to
+        /// force-enter the Attacking state immediately, ahead of the next DetermineState call.
+        /// No-ops if this NPC type has no registered "Attacking" clip.
         /// </summary>
-        private static string DetermineState(NPC npc, AnimationSet set)
+        public static void TriggerAttack(AnimationRuntime runtime)
         {
-            // TODO (rollout step 2): Attacking, bound to the confirmed vanilla shoot/throw/magic
-            // hooks (see "Vanilla Compatibility" in ANIMFRAMEWORK_SPEC.md) — not wired yet.
+            AnimationClip clip;
+            if (runtime == null || runtime.Set == null || !runtime.Set.States.TryGetValue("Attacking", out clip))
+                return;
+
+            runtime.CurrentState = "Attacking";
+            runtime.StatePlayer.Play(clip);
+        }
+
+        /// <summary>
+        /// Default state-transition logic. Baseline set per ANIMFRAMEWORK_SPEC.md is Idle,
+        /// SpecialIdle, Walking, Attacking, Sitting.
+        /// </summary>
+        private static string DetermineState(NPC npc, AnimationRuntime runtime)
+        {
+            AnimationSet set = runtime.Set;
+
+            // TownNPCAttackProj (see AnimatedGlobalNPC/AnimatedNPC) already forced entry into
+            // Attacking via TriggerAttack — stay there until its Once-mode clip finishes rather
+            // than letting Walking/Idle preempt mid-punch. Once IsFinished flips true, fall
+            // through to the normal logic below.
+            if (runtime.CurrentState == "Attacking" && set.States.ContainsKey("Attacking") && !runtime.StatePlayer.IsFinished)
+                return "Attacking";
+
             // TODO (rollout step 2): Sitting, bound to vanilla's NPC.sitting struct once its
             // exact field name is confirmed against a live API reference.
             // TODO (rollout step 2): SpecialIdle, framework-original random-chance-after-N-ticks.

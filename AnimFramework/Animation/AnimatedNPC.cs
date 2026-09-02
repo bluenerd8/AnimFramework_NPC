@@ -48,6 +48,13 @@ namespace AnimFramework.Animation
             return AnimationController.PreDraw(NPC, Runtime, spriteBatch, screenPos, drawColor);
         }
 
+        // Same real attack-start signal as AnimatedGlobalNPC.TownNPCAttackProj, for NPCs built
+        // on this base class instead of the registry path. Observation only.
+        public override void TownNPCAttackProj(ref int projType, ref int attackDelay)
+        {
+            AnimationController.TriggerAttack(Runtime);
+        }
+
         // Without this, tModLoader's default MemberwiseClone would copy our _runtime reference
         // as-is onto every spawned instance of this NPC type, so all of them would share one
         // Stopwatch and animate in lockstep. Nulling it here forces each clone to lazily build

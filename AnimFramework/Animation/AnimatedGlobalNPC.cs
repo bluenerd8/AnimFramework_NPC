@@ -39,6 +39,15 @@ namespace AnimFramework.Animation
             return AnimationController.PreDraw(npc, runtime, spriteBatch, screenPos, drawColor);
         }
 
+        // Real vanilla attack-start signal for AttackType 0/1/2 (throwing/shooting/magic) — see
+        // AnimationController.TriggerAttack and the spec's Vanilla Compatibility section.
+        // Observation only: projType/attackDelay are never touched, so vanilla's own attack
+        // behavior is completely unaffected — this hook is used purely to know an attack began.
+        public override void TownNPCAttackProj(NPC npc, ref int projType, ref int attackDelay)
+        {
+            AnimationController.TriggerAttack(GetRuntime(npc));
+        }
+
         // Same MemberwiseClone shared-state hazard as AnimatedNPC.Clone (see its comment) —
         // without this, every NPC instance of a registered type would share one Stopwatch.
         public override GlobalNPC Clone(NPC from, NPC to)
