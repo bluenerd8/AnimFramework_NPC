@@ -136,10 +136,46 @@ namespace AnimFramework.Animation
             if (state != null)
                 return state;
 
+            // A mid-playthrough Once-mode SpecialIdle is held to completion before anything
+            // below (including Walking) can reclaim the state — see this method's own doc
+            // comment for why this can't live inside DetermineIdleState like the rest of
+            // SpecialIdle's logic does.
+            state = HoldInProgressSpecialIdle(runtime, set);
+            if (state != null)
+                return state;
+
             if (npc.velocity != Vector2.Zero && set.States.ContainsKey("Walking"))
                 return "Walking";
 
             return DetermineIdleState(runtime, set);
+        }
+
+        /// <summary>
+        /// Keeps a Once-mode SpecialIdle clip playing to completion even if velocity blips
+        /// nonzero mid-clip — vanilla town NPC AI's wander velocity is erratic tick-to-tick, and
+        /// without this a single stray tick of nonzero velocity mid-playthrough would hand
+        /// priority to Walking (checked directly in DetermineState, above DetermineIdleState)
+        /// and cut the clip off before <c>IsFinished</c>. Same "hold until finished" contract
+        /// Attacking's Once-mode clips get (see DetermineAttackingState) — checked here, ahead
+        /// of the Walking gate, rather than where the rest of SpecialIdle's logic lives in
+        /// DetermineIdleState, specifically so it can out-rank that gate.
+        ///
+        /// Scoped to Loop == Once only: <c>AnimationPlayer.IsFinished</c> never goes true for
+        /// Loop-mode clips (see AnimationPlayer.GetCurrentFrame), so applying this hold to a
+        /// Loop-mode SpecialIdle would trap the NPC in it forever. Loop-mode SpecialIdle has no
+        /// defined play-duration semantics yet — not attempted here; author SpecialIdle as Once
+        /// until that's designed.
+        /// </summary>
+        private static string HoldInProgressSpecialIdle(AnimationRuntime runtime, AnimationSet set)
+        {
+            if (runtime.CurrentState != "SpecialIdle" || runtime.StatePlayer.IsFinished)
+                return null;
+
+            AnimationClip specialClip;
+            if (set.States.TryGetValue("SpecialIdle", out specialClip) && specialClip.Loop == LoopMode.Once)
+                return "SpecialIdle";
+
+            return null;
         }
 
         /// <summary>
@@ -148,9 +184,10 @@ namespace AnimFramework.Animation
         /// randomized-interval mechanism as the Blink overlay (<see cref="RollNextInterval"/>,
         /// <see cref="AnimationClip.IntervalMin"/>/<c>IntervalMax</c>) but applied to a true
         /// state instead of an overlay: while otherwise idle, wait out a freshly-rolled interval
-        /// on a real-time clock, then switch in for one play-through. A Once-mode SpecialIdle
-        /// clip holds until <c>IsFinished</c> — same mechanic Attacking's Once-mode exit uses —
-        /// before falling back to plain Idle and rolling the next interval.
+        /// on a real-time clock, then switch in for one play-through. The in-progress hold for a
+        /// live SpecialIdle playthrough is handled upstream, in DetermineState — see
+        /// HoldInProgressSpecialIdle — so this method only ever sees SpecialIdle either not yet
+        /// started or already finished.
         /// </summary>
         private static string DetermineIdleState(AnimationRuntime runtime, AnimationSet set)
         {
@@ -160,9 +197,6 @@ namespace AnimFramework.Animation
             AnimationClip specialClip;
             if (!set.States.TryGetValue("SpecialIdle", out specialClip))
                 return "Idle"; // not authored for this NPC — plain Idle only
-
-            if (runtime.CurrentState == "SpecialIdle" && !runtime.StatePlayer.IsFinished)
-                return "SpecialIdle"; // mid-playthrough — let it finish before re-rolling
 
             if (!runtime.SpecialIdleClock.IsRunning)
             {
