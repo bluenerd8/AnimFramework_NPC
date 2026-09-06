@@ -46,6 +46,29 @@ namespace AnimFramework.Animation
         /// <summary>The <see cref="AttackSignalId"/> a Once-mode Attacking clip has already played a full cycle for.</summary>
         public int LastConsumedAttackSignalId { get; set; }
 
+        /// <summary>
+        /// Bumped once per talk-start edge: either the player's dialog opening with this NPC
+        /// (edge-detected in-place from the level-triggered <c>talkNPC</c> flag — see
+        /// AnimationController.DetermineTalkingState) or a real
+        /// <see cref="AnimationController.NotifyTalkTriggered"/> call (NPC-to-NPC emote-bubble
+        /// chatter via <c>GlobalNPC.PickEmote</c>). Same "identify which signal is currently
+        /// live, distinct from AttackSignalId" role as its Attacking counterpart, driving the
+        /// same "play exactly once per signal" consumption via
+        /// <see cref="LastConsumedTalkSignalId"/>.
+        /// </summary>
+        public int TalkSignalId { get; set; }
+
+        /// <summary>The <see cref="TalkSignalId"/> a Once-mode Talk clip has already played a full cycle for.</summary>
+        public int LastConsumedTalkSignalId { get; set; }
+
+        /// <summary>
+        /// Last-seen value of <c>Main.LocalPlayer.talkNPC == npc.whoAmI</c> — this flag is
+        /// level-triggered (true for the whole time the player's dialog box is open), so this is
+        /// what lets DetermineTalkingState detect the rising edge itself and bump
+        /// <see cref="TalkSignalId"/> exactly once per conversation, rather than once per tick.
+        /// </summary>
+        public bool WasPlayerTalking { get; set; }
+
         /// <summary>Real-time clock behind the Blink timed overlay — see AnimationController.ShouldBlink.</summary>
         public Stopwatch BlinkClock { get; } = new Stopwatch();
 

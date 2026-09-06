@@ -37,8 +37,8 @@
       "state": "Talk",
       "row": 4,
       "frameCount": 2,
-      "fps": 3,
-      "loop": "Loop"
+      "fps": 2,
+      "loop": "Once"
     }
   ],
   "overlays": []

@@ -1,6 +1,8 @@
+using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria;
+using Terraria.GameContent.UI;
 using Terraria.ModLoader;
 
 namespace AnimFramework.Animation
@@ -52,6 +54,18 @@ namespace AnimFramework.Animation
         public override void TownNPCAttackMagic(NPC npc, ref float auraLightMultiplier)
         {
             AnimationController.NotifyAttackTriggered(npc, GetRuntime(npc));
+        }
+
+        // Talk-state trigger for the NPC-to-NPC (and NPC-to-player-without-dialog-open) ambient
+        // chatter case — see AnimatedNPC's copy of this override and
+        // AnimationController.NotifyTalkTriggered's doc comment for the confirmed hook and the
+        // otherAnchor gate.
+        public override int? PickEmote(NPC npc, Player closestPlayer, List<int> emoteList, WorldUIAnchor otherAnchor)
+        {
+            if (otherAnchor != null)
+                AnimationController.NotifyTalkTriggered(npc, GetRuntime(npc));
+
+            return base.PickEmote(npc, closestPlayer, emoteList, otherAnchor);
         }
 
         // Same MemberwiseClone shared-state hazard as AnimatedNPC.Clone (see its comment) —

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria;
+using Terraria.GameContent.UI;
 using Terraria.ModLoader;
 
 namespace AnimFramework.Animation
@@ -61,6 +62,23 @@ namespace AnimFramework.Animation
         public override void TownNPCAttackMagic(ref float auraLightMultiplier)
         {
             AnimationController.NotifyAttackTriggered(NPC, Runtime);
+        }
+
+        // Talk-state trigger for the NPC-to-NPC (and NPC-to-player-without-dialog-open) ambient
+        // chatter case — see AnimationController.NotifyTalkTriggered's doc comment for why
+        // PickEmote is the confirmed hook and why otherAnchor gates it. Purely observational,
+        // same as the attack hooks above: forwards to base so vanilla's own emote pick (or
+        // another mod's override further down the chain) is untouched. Signature confirmed
+        // against ExampleMod's ExamplePerson.cs (ModNPC.PickEmote has no leading NPC parameter,
+        // unlike the GlobalNPC-side signature below); WorldUIAnchor's namespace is inferred from
+        // that same file's using list (Terraria.GameContent.UI) rather than a page that states
+        // it directly — worth a Build+Reload check like the attack hooks above.
+        public override int? PickEmote(Player closestPlayer, List<int> emoteList, WorldUIAnchor otherAnchor)
+        {
+            if (otherAnchor != null)
+                AnimationController.NotifyTalkTriggered(NPC, Runtime);
+
+            return base.PickEmote(closestPlayer, emoteList, otherAnchor);
         }
 
         // Without this, tModLoader's default MemberwiseClone would copy our _runtime reference

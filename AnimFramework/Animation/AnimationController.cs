@@ -90,6 +90,29 @@ namespace AnimFramework.Animation
             runtime.AttackSignalId++;
         }
 
+        /// <summary>
+        /// Called by both attachment classes' <c>PickEmote</c> overrides whenever vanilla is
+        /// about to have this NPC pick an emote bubble to show — confirmed against
+        /// docs.tmodloader.net's GlobalNPC reference: "Allows you to change the emote that the
+        /// NPC will pick... <c>otherAnchor</c> - A WorldUIAnchor instance indicating the emote
+        /// conversation target; use this to access the NPC or Player this NPC is communicating
+        /// with." That's the NPC-to-NPC (and NPC-to-player-without-dialog-open) ambient chatter
+        /// case flagged as unwired in ANIMFRAMEWORK_SPEC.md's Vanilla Compatibility section — the
+        /// two attachment classes only forward here when <c>otherAnchor</c> is non-null, i.e.
+        /// this is an actual conversation rather than a solo mood emote (rain, biome, etc.), so a
+        /// bored/lonely emote doesn't falsely trigger the Talk animation.
+        ///
+        /// Purely observational, same contract as NotifyAttackTriggered: never touches the
+        /// hook's own return value, so it can't change which emote vanilla actually picks.
+        /// </summary>
+        internal static void NotifyTalkTriggered(NPC npc, AnimationRuntime runtime)
+        {
+            if (runtime == null)
+                return;
+
+            runtime.TalkSignalId++;
+        }
+
         // Loop-mode Attacking clips (channeled attacks) have no confirmed continuous "still
         // attacking" vanilla signal — the trigger hooks only fire at discrete attack-decision
         // points, not every tick. This buffer treats repeated firings as "still attacking" and
@@ -124,7 +147,7 @@ namespace AnimFramework.Animation
             if (state != null)
                 return state;
 
-            state = DetermineTalkingState(npc, set);
+            state = DetermineTalkingState(npc, runtime, set);
             if (state != null)
                 return state;
 
@@ -264,20 +287,51 @@ namespace AnimFramework.Animation
         /// worked for a simple mouth-flap, but couldn't express a full bodily talking animation
         /// (a gesture, a distinct stance) without the underlying pose fighting it. As a state, a
         /// content mod's Talk clip is a full sprite like any other, author-chosen Loop or Once
-        /// like every other row — no special-casing here beyond the trigger check itself.
-        /// Trigger: <c>Main.LocalPlayer.talkNPC == npc.whoAmI</c> — confirmed, but only covers
-        /// the player-has-this-NPC's-dialog-open case. The other case (vanilla's ambient
-        /// NPC-to-NPC "emote bubble" chatter, via <c>ModEmoteBubble</c>/<c>EmoteBubbleLoader</c>
-        /// — confirmed to exist, per docs.tmodloader.net) is NOT wired here yet: the exact way
-        /// to read "does this NPC currently have an active emote bubble" from PreDraw isn't
-        /// confirmed, and guessing it would repeat the exact mistake Sitting's first attempt
-        /// made. Ranked above Sitting/registered detectors/Walking — a player mid-dialog with
-        /// this NPC shouldn't flicker back to Walking/Idle off residual velocity.
+        /// like every other row.
+        ///
+        /// Two triggers feed the same <see cref="AnimationRuntime.TalkSignalId"/> signal, each
+        /// bumping it once per conversation *start* rather than once per tick:
+        /// - Player dialog: <c>Main.LocalPlayer.talkNPC == npc.whoAmI</c> is level-triggered
+        ///   (true for the whole dialog-open duration), so this method edge-detects it itself via
+        ///   <see cref="AnimationRuntime.WasPlayerTalking"/> and bumps the signal only on the
+        ///   false→true transition.
+        /// - NPC-to-NPC ambient chatter: <see cref="NotifyTalkTriggered"/>, called from the two
+        ///   attachment classes' <c>PickEmote</c> override — see that method's doc comment for
+        ///   why this is the confirmed hook (docs.tmodloader.net) rather than a guess.
+        ///
+        /// A Once-mode Talk clip then plays exactly one play-through per signal — same
+        /// "consume this signal id, hold current playthrough to completion" contract as
+        /// DetermineAttackingState's Once-mode branch — and falls through to whatever state
+        /// would otherwise apply (Idle/Walking/etc.) once finished, even if the player's dialog
+        /// box is still open. A Loop-mode Talk clip keeps the original level-triggered behavior
+        /// (held for as long as the player's dialog is open) for authors who prefer that.
+        ///
+        /// Ranked above Sitting/registered detectors/Walking — a player mid-dialog with this NPC
+        /// shouldn't flicker back to Walking/Idle off residual velocity while Talk is playing.
         /// </summary>
-        private static string DetermineTalkingState(NPC npc, AnimationSet set)
+        private static string DetermineTalkingState(NPC npc, AnimationRuntime runtime, AnimationSet set)
         {
-            if (set.States.ContainsKey("Talk") && Main.LocalPlayer.talkNPC == npc.whoAmI)
+            AnimationClip clip;
+            if (!set.States.TryGetValue("Talk", out clip))
+                return null; // not authored for this NPC — nothing to trigger into
+
+            bool playerTalking = Main.LocalPlayer.talkNPC == npc.whoAmI;
+            if (playerTalking && !runtime.WasPlayerTalking)
+                runtime.TalkSignalId++; // rising edge: dialog just opened with this NPC
+            runtime.WasPlayerTalking = playerTalking;
+
+            if (clip.Loop != LoopMode.Once)
+                return playerTalking ? "Talk" : null; // legacy Loop-mode behavior: held open-dialog-long
+
+            if (runtime.CurrentState == "Talk" && !runtime.StatePlayer.IsFinished)
+                return "Talk"; // still mid-playthrough
+
+            if (runtime.TalkSignalId != runtime.LastConsumedTalkSignalId)
+            {
+                runtime.LastConsumedTalkSignalId = runtime.TalkSignalId;
                 return "Talk";
+            }
+
             return null;
         }
 

@@ -101,7 +101,7 @@ framework.)
     { "state": "Walking",     "row": 2, "frameCount": 8,  "fps": 12, "loop": "Loop" },
     { "state": "Attacking",   "row": 3, "frameCount": 5,  "duration": 0.5, "loop": "Once" },
     { "state": "Sitting",     "row": 4, "frameCount": 4,  "fps": 4,  "loop": "PingPong" },
-    { "state": "Talk",        "row": 5, "frameCount": 2,  "fps": 3,  "loop": "Loop" }
+    { "state": "Talk",        "row": 5, "frameCount": 2,  "fps": 3,  "loop": "Once" }
   ],
   "overlays": [
     { "state": "Blink", "row": 6, "frameCount": 3, "fps": 12, "loop": "Once",
@@ -162,13 +162,22 @@ Binding to vanilla signals rather than inventing parallel detection, where a rea
 signal exists:
 
 - **Walking** — `NPC.velocity != 0`. Direct, reliable, vanilla sets this itself.
-- **Talk** (now a state, not an overlay — see Baseline Animation Set above) —
-  `Main.LocalPlayer.talkNPC == NPC.whoAmI`. Direct, reliable, but only covers the
-  player-has-this-NPC's-dialog-open case. The other case this state was meant to cover —
-  vanilla's ambient NPC-to-NPC emote-bubble chatter (`ModEmoteBubble`/`EmoteBubbleLoader`,
-  confirmed to exist) — is **not yet wired**: the exact way to read "does this NPC currently
-  have an active emote bubble" from `PreDraw` isn't confirmed. Needs one more targeted doc pass
-  or empirical testing, same bar as Sitting below — not guessed.
+- **Talk** (now a state, not an overlay — see Baseline Animation Set above) — two triggers, both
+  edge-detected so a `Once`-mode Talk clip plays exactly once per conversation start and then
+  falls back to whatever state would otherwise apply (Idle/Walking/etc.), even while the
+  underlying condition is still true:
+  - `Main.LocalPlayer.talkNPC == NPC.whoAmI` for the player-has-this-NPC's-dialog-open case.
+    Direct, reliable; level-triggered for the whole dialog-open duration, so
+    `AnimationController.DetermineTalkingState` edge-detects the rising edge itself
+    (`AnimationRuntime.WasPlayerTalking`) rather than re-firing every tick.
+  - `GlobalNPC.PickEmote`'s `otherAnchor` parameter (confirmed via docs.tmodloader.net: "A
+    WorldUIAnchor instance indicating the emote conversation target; use this to access the NPC
+    or Player this NPC is communicating with") for vanilla's ambient NPC-to-NPC emote-bubble
+    chatter (`ModEmoteBubble`/`EmoteBubbleLoader`) — the case previously flagged here as not yet
+    wired. Gated on `otherAnchor != null` so a solo mood emote (rain, biome, etc.) doesn't
+    falsely trigger Talk. See `AnimationController.NotifyTalkTriggered`.
+  A `Loop`-mode Talk clip keeps the original level-triggered behavior (held for as long as the
+  player's dialog is open) for authors who prefer that — see `DetermineTalkingState`.
 - **Sitting** — vanilla has native town-NPC sitting support (added 1.4.4, bench/chair
   interactions) with an `NPC.sitting` struct including an "is currently sitting" flag —
   preferred over guessing from zero-velocity-near-furniture. Now wired as `NPC.sitting.isSitting`
