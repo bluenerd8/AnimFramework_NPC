@@ -88,6 +88,18 @@ framework.)
   whether the clip exists); clip authored with neither field → framework default range; one or
   both declared → the author's numbers win (one alone = a fixed, non-jittered interval; both
   swapped automatically, with a load-time warning, if authored backwards).
+- **Declarable per-row frame size override** (`frameWidth`/`frameHeight`), falling back to the
+  sheet-wide default when unset — see `ANIMFRAMEWORK_NEW_FEATURES.md` §9. Lets one state (e.g.
+  a Walking row whose art needs extra width for a wide-swinging cape/sleeve) use a bigger frame
+  without forcing every other row in the same sheet to pay for that width too. `frameWidth` is
+  always safe to vary per row; a non-default `frameHeight` requires the sheet's PNG to be
+  physically laid out to match, since row position is computed as `Row * FrameHeight` — not
+  validated, on the author to get right.
+- **Declarable sheet-wide default origin** (`originX`/`originY` at the sheet level, alongside
+  `frameWidth`/`frameHeight`), used by any row that doesn't declare its own — see
+  `ANIMFRAMEWORK_NEW_FEATURES.md` §9. Useful when most/all rows in a sheet share the same
+  non-center pivot, so it doesn't need repeating on every row. Same "both X and Y required
+  together" rule as the per-row origin; resolution order is row → sheet → computed frame-center.
 
 ### JSON Schema (conceptual shape)
 ```json
@@ -98,7 +110,8 @@ framework.)
   "rows": [
     { "state": "Idle",        "row": 0, "frameCount": 8,  "fps": 8,  "loop": "Loop" },
     { "state": "SpecialIdle", "row": 1, "frameCount": 12, "fps": 8,  "loop": "Loop" },
-    { "state": "Walking",     "row": 2, "frameCount": 8,  "fps": 12, "loop": "Loop" },
+    { "state": "Walking",     "row": 2, "frameCount": 8,  "fps": 12, "loop": "Loop",
+      "frameWidth": 96, "frameHeight": 64, "originX": 48, "originY": 56 },
     { "state": "Attacking",   "row": 3, "frameCount": 5,  "duration": 0.5, "loop": "Once" },
     { "state": "Sitting",     "row": 4, "frameCount": 4,  "fps": 4,  "loop": "PingPong" },
     { "state": "Talk",        "row": 5, "frameCount": 2,  "fps": 3,  "loop": "Once" }
@@ -112,7 +125,10 @@ framework.)
 (`fps` vs `duration` per row is either/or; loader derives whichever wasn't given. Frame count
 is always required — it's what tells the reader how many columns to step through in that row.
 `intervalMin`/`intervalMax` are optional and only meaningful for timed-trigger overlays like
-Blink — omit both for the framework default, declare either or both to override it.)
+Blink — omit both for the framework default, declare either or both to override it. `frameWidth`/
+`frameHeight`/`originX`/`originY` on a row, shown here on Walking, are all optional overrides —
+every other row above omits them and just inherits the sheet-level `frameWidth`/`frameHeight`
+and the computed frame-center origin, exactly as before this schema addition.)
 
 ---
 

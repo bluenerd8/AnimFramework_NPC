@@ -221,7 +221,40 @@ possible future escalation, not needed for v1.
 
 ---
 
-## 9. Resource Pack Differentiation (positioning clarity, not a code feature)
+## 9. Per-Row Frame Size Override & Sheet-Level Origin Default
+
+Sheet authoring had two remaining rigidities on top of §8's per-clip origin: `frameWidth`/
+`frameHeight` were sheet-wide only (every row forced to share one cell size, even a row whose
+art genuinely needs to be bigger — e.g. a long-sleeved character whose sleeve only extends
+during Walking), and origin was per-row only with no way to declare a shared non-center default
+once for a sheet where most/all rows are consistently off-center.
+
+**Status: implemented.** Both are optional, fully backward-compatible additions to
+`SheetLayoutLoader`'s schema — a sheet declaring neither behaves identically to before this
+change.
+
+- `SheetRowDefinition.FrameWidth`/`FrameHeight` (nullable): a row-level override, resolved
+  against the sheet default via `SheetLayoutLoader.ResolveDimension` (row value if `> 0`, else
+  sheet default; a declared-but-invalid `<= 0` override degrades to the sheet default with a
+  load-time warning rather than crashing or skipping the row).
+- `SheetDefinition.OriginX`/`OriginY` (nullable): a sheet-wide default origin, resolved via
+  `SheetLayoutLoader.ResolveOrigin`'s three-tier cascade — row's own origin, if both X and Y are
+  declared, wins; else the sheet's default, if both are declared there; else `null`, so
+  `AnimationClip.GetOrigin()`'s computed frame-center fallback still applies exactly as before.
+
+**Fragility worth stating plainly, not burying:** `FrameWidth` is always safe to vary per row —
+each row's horizontal frame math (`frameIndex * FrameWidth` in `AnimationClip.GetSourceRect`) is
+self-contained and doesn't touch any other row. `FrameHeight` is not. Rows are stacked
+vertically as `Row * FrameHeight` — an index times that clip's own height — so a row declaring a
+taller `FrameHeight` than the sheet default only reads the correct pixels if the sheet's PNG was
+physically laid out to match. This is not validated or protected against; it's on the author to
+arrange the sheet correctly when using a non-default `FrameHeight`. A future, more robust fix
+would replace the index-based `Row` with an explicit per-row vertical pixel offset — not
+attempted here, kept as a possible follow-up.
+
+---
+
+## 10. Resource Pack Differentiation (positioning clarity, not a code feature)
 
 Confirmed via research: vanilla resource packs are locked to **exact original canvas
 dimensions and frame grid** per NPC — same sheet size, same row layout, same frame count as
