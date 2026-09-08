@@ -70,6 +70,17 @@ namespace AnimFramework.Animation
         /// </summary>
         public float? IntervalMin { get; set; }
         public float? IntervalMax { get; set; }
+
+        /// <summary>
+        /// Bounds, in completed loops, for a loop-count-triggered feature reading this clip —
+        /// currently only the Idle-paired Blink state's own trigger (see
+        /// <see cref="AnimationClip.LoopCountMin"/>/<c>LoopCountMax</c> for the fallback rule).
+        /// A different unit from <see cref="IntervalMin"/>/<see cref="IntervalMax"/> above (loops,
+        /// not seconds) — deliberately a separate pair of fields rather than overloading those.
+        /// Meaningless (and ignored) for rows/overlays nothing loop-count-driven reads.
+        /// </summary>
+        public int? LoopCountMin { get; set; }
+        public int? LoopCountMax { get; set; }
     }
 
     /// <summary>
@@ -169,10 +180,14 @@ namespace AnimFramework.Animation
             if (row.IntervalMin.HasValue && row.IntervalMax.HasValue && row.IntervalMin.Value > row.IntervalMax.Value)
                 mod.Logger.Warn($"AnimFramework: '{jsonAssetPath}' row '{row.State}' has intervalMin > intervalMax — swapped rather than treated as an error.");
 
+            if (row.LoopCountMin.HasValue && row.LoopCountMax.HasValue && row.LoopCountMin.Value > row.LoopCountMax.Value)
+                mod.Logger.Warn($"AnimFramework: '{jsonAssetPath}' row '{row.State}' has loopCountMin > loopCountMax — swapped rather than treated as an error.");
+
             return new AnimationClip(
                 row.State, def.TexturePath, frameWidth, frameHeight, row.FrameCount,
                 row.Row, row.Fps ?? 0f, row.Duration ?? 0f, loop, origin,
-                row.IntervalMin, row.IntervalMax);
+                row.IntervalMin, row.IntervalMax,
+                row.LoopCountMin, row.LoopCountMax);
         }
 
         /// <summary>

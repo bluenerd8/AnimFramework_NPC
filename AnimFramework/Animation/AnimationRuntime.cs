@@ -80,5 +80,18 @@ namespace AnimFramework.Animation
 
         /// <summary>Elapsed-seconds-on-<see cref="SpecialIdleClock"/> timestamp for this NPC's next scheduled SpecialIdle roll.</summary>
         public double NextSpecialIdleAt { get; set; }
+
+        /// <summary>
+        /// Threshold, in completed Idle loops (see <see cref="AnimationPlayer.GetCompletedLoops"/>),
+        /// for this NPC's next Blink. Distinct from <see cref="NextBlinkAt"/> above — that field
+        /// belongs to the older timed-overlay Blink mechanism (seconds-based, layers on top of
+        /// any state); this one belongs to the Idle-paired Blink *state* (loop-count-based,
+        /// Idle-only, no override/hold-to-completion). The two are independent mechanisms a
+        /// content mod can choose between — see AnimationController.DetermineIdleState. Needs no
+        /// separate clock of its own: it's compared directly against
+        /// <see cref="AnimationRuntime.StatePlayer"/>'s own completed-loop count, which already
+        /// resets naturally whenever Idle is freshly (re-)entered.
+        /// </summary>
+        public int NextBlinkAtLoopCount { get; set; }
     }
 }

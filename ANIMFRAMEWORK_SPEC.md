@@ -100,6 +100,11 @@ framework.)
   `ANIMFRAMEWORK_NEW_FEATURES.md` §9. Useful when most/all rows in a sheet share the same
   non-center pivot, so it doesn't need repeating on every row. Same "both X and Y required
   together" rule as the per-row origin; resolution order is row → sheet → computed frame-center.
+- **Declarable per-clip loop-count interval** (`loopCountMin`/`loopCountMax`, completed loops —
+  a different unit from the seconds-based `intervalMin`/`intervalMax` above, kept as a separate
+  pair rather than overloading those), for loop-count-triggered features like the Idle-paired
+  Blink state — see `ANIMFRAMEWORK_NEW_FEATURES.md` §11. Same three-tier fallback shape as
+  `intervalMin`/`intervalMax`, applied to loops instead of seconds.
 
 ### JSON Schema (conceptual shape)
 ```json
@@ -157,8 +162,16 @@ and the computed frame-center origin, exactly as before this schema addition.)
    - **Superseded note** (kept for history): "layered on top of the current state's frame as a
      second draw call (not a frame swap/replace) — matches the existing overlay list mechanism."
      This was `AnimationController.DrawOverlays`'s original design; Talk no longer uses it (the
-     `ShouldDrawOverlay` "Talk" case was removed). Blink is still a true overlay — the taxonomy
-     the overlay mechanism was built for still applies there, just not to Talk anymore.
+     `ShouldDrawOverlay` "Talk" case was removed). The timed-overlay Blink mechanism (§ below)
+     still exists and is independent of this.
+7. Blink (Idle-paired) — a *second*, independent Blink mechanism from the timed overlay of the
+   same name (see `ANIMFRAMEWORK_NEW_FEATURES.md` §4 vs §11): a real sibling state to Idle,
+   triggered by completed Idle loops rather than elapsed time, with no hold-to-completion
+   override (resumed velocity cuts it off immediately via the Walking gate, same as any other
+   idle-family variant that doesn't ask for priority). Optional and Idle-only by design — for
+   this project's actual needs, blinking during Walking/Attacking/etc. wasn't wanted, so the
+   overlay mechanism's cross-state reach wasn't worth its per-state alignment cost here. The two
+   mechanisms coexist; a content mod picks whichever fits a given NPC.
 
 **Explicitly deferred to later passes:**
 - Triggered/one-shot secondary effect animations (e.g. directional attack "gust" effect) —

@@ -268,6 +268,92 @@ declared JSON rather than hardcoded engine tables.
 
 ---
 
+## 11. Idle-Paired Blink (Loop-Count-Triggered State)
+
+A second, *different* mechanism sharing the name "Blink" with §4's timed overlay — worth being
+explicit that these are two independent, coexisting options, not one feature replacing the
+other. Motivation: for this project's actual authoring needs, blinking is conventionally an
+Idle-only detail (eyes stay open during Walking/Attacking/etc. in most pixel-art games), so the
+timed overlay's real selling point — one clip works across every state — wasn't buying anything
+in practice, while its per-state alignment cost (an overlay's fixed origin has to line up
+against whatever base pose is currently showing) was a real cost. A full duplicate Idle pose
+with eyes closed, authored as its own row, sidesteps that entirely.
+
+**Status: implemented**, in `AnimationController.DetermineIdleState`, `AnimationPlayer`, and new
+`AnimationClip`/`AnimationRuntime` fields:
+
+- **A real sibling state to Idle** (`AnimationSet.States["Blink"]`), not a layered mark — same
+  full-clip authoring as any other state, sharing Idle's texture/frame-size conventions per the
+  §9-style per-row overrides if it ever needs to differ.
+- **Triggered by completed Idle loops, not elapsed time** — deliberately different from every
+  other timer in this framework (Blink-overlay, SpecialIdle), specifically to guarantee the
+  switch always lands on a clean loop boundary instead of an arbitrary mid-cycle moment, which a
+  seconds-based timer can't promise. `AnimationPlayer.GetCompletedLoops()` derives this from the
+  same elapsed-time/Fps math `GetCurrentFrame()` already uses — no separate clock, and it
+  naturally resets to 0 whenever Idle is freshly (re-)entered, which is exactly the right
+  semantic (can't have "completed 3 Idle loops" if the NPC spent that time Walking instead).
+- **Bounds are a separate declarable pair, `loopCountMin`/`loopCountMax`** (`AnimationClip`,
+  fallback default 0–2 loops) — kept distinct from `intervalMin`/`intervalMax` on purpose, since
+  those are seconds; reusing the same fields for two different units depending on which feature
+  reads them would be a real footgun, not a simplification.
+- **No hold-to-completion override, unlike SpecialIdle.** SpecialIdle's
+  `HoldInProgressSpecialIdle` deliberately outranks the Walking gate in `DetermineState` so a
+  triggered gesture always finishes even if velocity resumes mid-playthrough. Blink gets no such
+  carve-out: it lives entirely inside `DetermineIdleState`, ranked *below* the Walking gate, so
+  resumed velocity cuts it off immediately with zero special-casing — a deliberate simplicity
+  trade-off, not an oversight.
+- **Known footgun, documented rather than enforced (same precedent as SpecialIdle's own
+  Loop-mode caveat, see `HoldInProgressSpecialIdle`'s doc comment in `AnimationController.cs`):**
+  Blink must be authored `Once`. If declared `Loop`, `IsFinished`
+  never goes true (`AnimationPlayer.GetCurrentFrame`), so `DetermineIdleState`'s
+  still-mid-playthrough check never releases it — the NPC would visibly get stuck in Blink
+  forever. Not runtime-validated, same as the equivalent SpecialIdle risk.
+- **Open question, not yet resolved:** min-loop-count of 0 (the framework default's floor) means
+  two Blinks can fire back-to-back with zero Idle loops between them. Estimated acceptable at the
+  chosen default range (0–2: roughly 1-in-9 chance of one immediate repeat, 1-in-27 of two) and
+  deliberately left unguarded for now — verify how it actually reads in-game before adding any
+  anti-clustering logic. If it does look repetitive, the fix is a semantic one (redefine the
+  bounds as "guaranteed 1 loop, plus `min`–`max` additional" so zero-gap repeats are ruled out by
+  construction) rather than tracking consecutive-fire counts at runtime.
+
+---
+
+## 12. Alert (Idle-only, first real Detector List use case)
+
+§2's `RegisterStateDetector` example (`npc.velocity.Y > 2f ? "Falling" : null`) was always
+hypothetical — no content mod actually used the detector list until now. Alert is the first real
+one, and confirms the extension point works end-to-end for its intended purpose: a content mod
+adding a new competing state without touching `AnimationController` at all.
+
+**Status: implemented, Idle-only** (`GuideExpandedAnimations/GuideAnimationSetup.cs`) — a
+deliberately small first slice, not the full "layered condition" idea (a future pass could add
+AlertWalking/AlertSpecialIdle/etc. so Alert modifies every state rather than only substituting
+for Idle; not attempted here).
+
+- **A true competing state, not an Idle-family variant like Blink.** Registered via
+  `AnimationController.RegisterStateDetector`, which runs in `DetermineState` after
+  Attacking/Talk/Sitting but before the Walking gate — exactly the right slot: Alert should
+  never override an NPC that's actually already attacking, but should outrank plain Walking/Idle
+  when a threat is nearby.
+- **Detection is `NPCID.Sets.DangerDetectRange[Type]`-based** (confirmed against
+  docs.tmodloader.net: pixel radius a town NPC uses to engage enemies, `-1` sentinel meaning
+  vanilla's own 200px default) plus a proximity scan over `Main.npc` for anything active,
+  non-friendly, and damaging. That "hostile" combination is a reasonable heuristic, not a single
+  confirmed vanilla field the way `DangerDetectRange` itself is — flagged as such in code.
+- **No AlertWalking yet, so the detector explicitly steps aside while the NPC has velocity**
+  (`return null` on nonzero `npc.velocity`), falling through to ordinary Walking rather than
+  freezing a stationary Alert pose on a moving NPC. This is the same "no clip for that
+  combination → play the next best animation" graceful-degradation spirit as §3, just enforced
+  by the detector's own logic instead of the states dictionary lookup, since the gap here is
+  motion-context-shaped rather than "clip doesn't exist."
+- **Known cost, not yet addressed:** the detector (and its proximity scan) runs once per render
+  frame per animated NPC that reaches this point in `DetermineState`, not once per logic tick —
+  same draw-time-only characteristic as everything else in this framework. Fine for one NPC;
+  worth throttling (e.g. only rescanning every few frames) if this pattern gets reused across
+  many animated NPCs at once.
+
+---
+
 ## Current Code Status (recap)
 
 As of this doc, `AnimationController.cs` implements: Idle, Walking, Sitting, Attacking

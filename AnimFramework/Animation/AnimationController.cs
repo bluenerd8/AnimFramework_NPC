@@ -202,20 +202,51 @@ namespace AnimFramework.Animation
         }
 
         /// <summary>
-        /// Idle, with the occasional SpecialIdle variant mixed in — framework-original logic,
-        /// no vanilla signal to bind to (per the spec's Baseline Animation Set). Reuses the same
-        /// randomized-interval mechanism as the Blink overlay (<see cref="RollNextInterval"/>,
-        /// <see cref="AnimationClip.IntervalMin"/>/<c>IntervalMax</c>) but applied to a true
-        /// state instead of an overlay: while otherwise idle, wait out a freshly-rolled interval
-        /// on a real-time clock, then switch in for one play-through. The in-progress hold for a
-        /// live SpecialIdle playthrough is handled upstream, in DetermineState — see
-        /// HoldInProgressSpecialIdle — so this method only ever sees SpecialIdle either not yet
-        /// started or already finished.
+        /// Idle, with the occasional SpecialIdle and/or Blink variant mixed in — framework-
+        /// original logic, no vanilla signal to bind to (per the spec's Baseline Animation Set).
+        ///
+        /// SpecialIdle reuses the same randomized-interval mechanism as the timed-overlay Blink
+        /// (<see cref="RollNextInterval"/>, <see cref="AnimationClip.IntervalMin"/>/
+        /// <c>IntervalMax</c>) but applied to a true state instead of an overlay: while otherwise
+        /// idle, wait out a freshly-rolled interval on a real-time clock, then switch in for one
+        /// play-through. The in-progress hold for a live SpecialIdle playthrough is handled
+        /// upstream, in DetermineState — see HoldInProgressSpecialIdle — so this method only ever
+        /// sees SpecialIdle either not yet started or already finished.
+        ///
+        /// Blink here is a *different*, Idle-paired mechanism from the timed overlay of the same
+        /// name (see ShouldBlink) — a real sibling state to Idle rather than a layered mark, with
+        /// no upstream hold-to-completion carve-out. Deliberately scoped this way: unlike
+        /// SpecialIdle, Blink has no priority over the Walking gate in DetermineState, which is
+        /// ranked above this method — so resumed velocity cuts Blink off immediately, with zero
+        /// special-casing needed here to make that happen. Triggered by completed Idle loops
+        /// (<see cref="AnimationPlayer.GetCompletedLoops"/>) rather than elapsed time, so the
+        /// switch always lands on a clean loop boundary instead of an arbitrary mid-cycle moment.
         /// </summary>
         private static string DetermineIdleState(AnimationRuntime runtime, AnimationSet set)
         {
             if (!set.States.ContainsKey("Idle"))
                 return null;
+
+            AnimationClip blinkClip;
+            if (set.States.TryGetValue("Blink", out blinkClip))
+            {
+                if (runtime.CurrentState == "Blink" && !runtime.StatePlayer.IsFinished)
+                    return "Blink"; // still mid-playthrough (velocity is already confirmed 0 this tick)
+
+                if (runtime.CurrentState != "Idle")
+                {
+                    // Fresh idle session starting this frame — Idle hasn't actually played a
+                    // single frame yet as of this call (the transition into it happens after
+                    // DetermineState returns, in PreDraw), so StatePlayer's completed-loop count
+                    // still belongs to whatever state was active before this and isn't
+                    // meaningful yet. Roll this session's threshold and start with plain Idle.
+                    runtime.NextBlinkAtLoopCount = RollNextLoopCount(blinkClip);
+                }
+                else if (runtime.StatePlayer.GetCompletedLoops() >= runtime.NextBlinkAtLoopCount)
+                {
+                    return "Blink";
+                }
+            }
 
             AnimationClip specialClip;
             if (!set.States.TryGetValue("SpecialIdle", out specialClip))
@@ -457,6 +488,20 @@ namespace AnimFramework.Animation
             // and got the framework default range) still works fine here — NextDouble() * 0 is
             // just 0, so the roll collapses to that single value with no special-casing needed.
             return clip.IntervalMin + _intervalJitter.NextDouble() * (clip.IntervalMax - clip.IntervalMin);
+        }
+
+        /// <summary>
+        /// Rolls how many completed Idle loops until the next Blink — the loop-count analogue of
+        /// <see cref="RollNextInterval"/>, reusing the same shared <see cref="_intervalJitter"/>
+        /// instance rather than a second RNG. <c>Random.Next(min, max)</c>'s upper bound is
+        /// exclusive, so <c>LoopCountMax + 1</c> makes it inclusive, matching
+        /// <see cref="RollNextInterval"/>'s inclusive-both-ends contract; <c>LoopCountMin ==
+        /// LoopCountMax</c> (fixed value, or declared neither and got the default range) still
+        /// works fine — <c>Next(n, n + 1)</c> always returns exactly <c>n</c>.
+        /// </summary>
+        private static int RollNextLoopCount(AnimationClip clip)
+        {
+            return _intervalJitter.Next(clip.LoopCountMin, clip.LoopCountMax + 1);
         }
 
         private static void DrawClip(NPC npc, AnimationClip clip, AnimationPlayer player, SpriteBatch spriteBatch, Vector2 screenPos, Color drawColor)

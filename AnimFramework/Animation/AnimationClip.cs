@@ -41,11 +41,33 @@ namespace AnimFramework.Animation
         private const float DefaultIntervalMinSeconds = 2.5f;
         private const float DefaultIntervalMaxSeconds = 6f;
 
+        /// <summary>
+        /// Resolved bounds, in *completed loops of the currently-active Loop-mode clip*, for how
+        /// often a loop-count-triggered feature should fire — currently only the Idle-paired
+        /// Blink state (see <c>AnimationController.DetermineIdleState</c>). Deliberately a
+        /// separate pair of fields from <see cref="IntervalMin"/>/<see cref="IntervalMax"/>
+        /// rather than reusing them: those are seconds, these are a loop count — same field
+        /// meaning two different units depending on which feature reads it would be a real
+        /// footgun, not a simplification. Same fallback shape as everything else here though:
+        /// meaningless for anything that isn't loop-count-driven; always a valid, non-crossed
+        /// range — see the resolution rule in the constructor.
+        /// </summary>
+        public int LoopCountMin { get; }
+        public int LoopCountMax { get; }
+
+        // Default range for a loop-count-triggered feature that declares neither bound — chosen
+        // so the common case (no JSON tuning at all) still gets occasional, not-every-single-loop
+        // variety. Not vanilla-derived, just a reasonable out-of-the-box feel, same spirit as the
+        // seconds-based defaults above.
+        private const int DefaultLoopCountMin = 0;
+        private const int DefaultLoopCountMax = 2;
+
         private Asset<Texture2D> _texture;
 
         public AnimationClip(string state, string texturePath, int frameWidth, int frameHeight, int frameCount,
             int row, float fps, float duration, LoopMode loop, Vector2? origin = null,
-            float? intervalMin = null, float? intervalMax = null)
+            float? intervalMin = null, float? intervalMax = null,
+            int? loopCountMin = null, int? loopCountMax = null)
         {
             if (frameCount <= 0)
                 throw new ArgumentOutOfRangeException(nameof(frameCount), "AnimationClip requires at least 1 frame.");
@@ -105,6 +127,27 @@ namespace AnimFramework.Animation
             {
                 IntervalMin = DefaultIntervalMinSeconds;
                 IntervalMax = DefaultIntervalMaxSeconds;
+            }
+
+            // Same three-tier rule as IntervalMin/IntervalMax above, applied to the separate
+            // loop-count unit instead of seconds.
+            if (loopCountMin.HasValue && loopCountMax.HasValue)
+            {
+                LoopCountMin = Math.Min(loopCountMin.Value, loopCountMax.Value);
+                LoopCountMax = Math.Max(loopCountMin.Value, loopCountMax.Value);
+            }
+            else if (loopCountMin.HasValue)
+            {
+                LoopCountMin = LoopCountMax = loopCountMin.Value;
+            }
+            else if (loopCountMax.HasValue)
+            {
+                LoopCountMin = LoopCountMax = loopCountMax.Value;
+            }
+            else
+            {
+                LoopCountMin = DefaultLoopCountMin;
+                LoopCountMax = DefaultLoopCountMax;
             }
         }
 

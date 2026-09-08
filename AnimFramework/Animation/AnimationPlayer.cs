@@ -78,5 +78,24 @@ namespace AnimFramework.Animation
                     return (int)cyclePos % frameCount;
             }
         }
+
+        /// <summary>
+        /// How many full loops the active clip has completed since <see cref="Play"/> was last
+        /// called — used by loop-count-triggered features (currently the Idle-paired Blink
+        /// state, see <c>AnimationController.DetermineIdleState</c>). Meaningless (and always 0)
+        /// for anything but a Loop-mode clip: Once/PingPong clips don't have a "completed loops"
+        /// concept the way a continuously-wrapping Loop clip does. Derived from the same
+        /// elapsed-time/Fps math as <see cref="GetCurrentFrame"/> rather than tracked separately,
+        /// so it needs no extra state and naturally resets to 0 whenever <see cref="Play"/>
+        /// restarts the clip (a fresh state entry), exactly like frame position does.
+        /// </summary>
+        public int GetCompletedLoops()
+        {
+            if (_clip == null || _clip.FrameCount <= 0 || _clip.Loop != LoopMode.Loop)
+                return 0;
+
+            double cyclePos = _stopwatch.Elapsed.TotalSeconds * _clip.Fps;
+            return (int)cyclePos / _clip.FrameCount;
+        }
     }
 }
