@@ -93,5 +93,24 @@ namespace AnimFramework.Animation
         /// resets naturally whenever Idle is freshly (re-)entered.
         /// </summary>
         public int NextBlinkAtLoopCount { get; set; }
+
+        /// <summary>
+        /// Most recent non-empty prefix a registered state-group detector reported — see
+        /// AnimationController.ResolveGroupPrefix. Kept so a brief gap in the raw signal (e.g. an
+        /// NPC skirmishing back and forth across DangerDetectRange's boundary) can still resolve
+        /// to the same group during <see cref="GroupSignalAge"/>'s buffer window, rather than the
+        /// group flickering on and off with every boundary crossing.
+        /// </summary>
+        public string LastActiveGroup { get; set; }
+
+        /// <summary>
+        /// Time since a group detector last reported <see cref="LastActiveGroup"/> active —
+        /// restarted every tick the raw signal is live, so it only starts counting up once the
+        /// signal actually stops. Unlike <see cref="AttackSignalAge"/> above (which restarts on
+        /// discrete trigger *events* via NotifyAttackTriggered), group detectors are polled fresh
+        /// every tick rather than pulsed, so this restarts on every live tick instead — same
+        /// "how long has it been since I last saw this" role, different signal shape driving it.
+        /// </summary>
+        public Stopwatch GroupSignalAge { get; } = new Stopwatch();
     }
 }

@@ -205,6 +205,45 @@ namespace AnimFramework.Animation
             return Math.Max(MinAttackSignalBufferSeconds, ticks / 60.0);
         }
 
+        // Group detectors are polled fresh every tick (see RunRegisteredGroupDetectors) rather
+        // than pulsed like an attack trigger, so an NPC skirmishing back and forth across a
+        // detector's own boundary (e.g. Alert's DangerDetectRange) can flip the raw signal on and
+        // off rapidly with no single "attack sequence length" to size a buffer from the way
+        // AttackSignalBufferSeconds does. A flat constant instead — long enough to smooth a
+        // normal skirmish's back-and-forth, short enough that a genuinely-over threat still drops
+        // Alert promptly. Not derived from anything vanilla; revisit if it ever needs to be
+        // per-group instead of framework-wide.
+        private const double GroupSignalBufferSeconds = 1.5;
+
+        /// <summary>
+        /// Resolves this tick's effective group prefix from the raw detector poll
+        /// (<see cref="RunRegisteredGroupDetectors"/>), holding the last active group for
+        /// <see cref="GroupSignalBufferSeconds"/> after it stops being reported rather than
+        /// dropping it the instant the raw signal lapses — this is what actually prevents the
+        /// erratic on/off flicker a boundary-crossing NPC would otherwise cause in Walking-gate/
+        /// DetermineIdleState's grouped lookups. <see cref="AnimationRuntime.GroupSignalAge"/> is
+        /// restarted every tick the raw signal is live, so it only starts counting up once the
+        /// signal actually stops — once it exceeds the buffer, the group truly clears.
+        /// </summary>
+        private static string ResolveGroupPrefix(NPC npc, AnimationRuntime runtime)
+        {
+            string rawGroup = RunRegisteredGroupDetectors(npc);
+
+            if (!string.IsNullOrEmpty(rawGroup))
+            {
+                runtime.LastActiveGroup = rawGroup;
+                runtime.GroupSignalAge.Restart();
+                return rawGroup;
+            }
+
+            bool bufferLive = runtime.GroupSignalAge.IsRunning
+                && runtime.GroupSignalAge.Elapsed.TotalSeconds <= GroupSignalBufferSeconds;
+            if (bufferLive && !string.IsNullOrEmpty(runtime.LastActiveGroup))
+                return runtime.LastActiveGroup;
+
+            return string.Empty;
+        }
+
         /// <summary>
         /// Default state-transition logic. Baseline set per ANIMFRAMEWORK_SPEC.md is Idle,
         /// SpecialIdle, Walking, Attacking, Sitting — all five are live now. Every check here
@@ -245,8 +284,10 @@ namespace AnimFramework.Animation
             // Walking/Idle/Blink/SpecialIdle only — Attacking/Talk/Sitting above are never
             // grouped, and override detectors above already won outright if they fired. Empty
             // prefix (no group active, or none registered) behaves identically to before this
-            // feature existed.
-            string groupPrefix = RunRegisteredGroupDetectors(npc) ?? string.Empty;
+            // feature existed. Goes through ResolveGroupPrefix rather than the raw detector poll
+            // directly, so a brief signal gap (e.g. a boundary-crossing skirmish) doesn't flicker
+            // the group on and off — see GroupSignalBufferSeconds.
+            string groupPrefix = ResolveGroupPrefix(npc, runtime);
 
             string walkName;
             AnimationClip walkClip;

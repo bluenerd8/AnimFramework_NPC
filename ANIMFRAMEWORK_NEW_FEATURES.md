@@ -364,11 +364,20 @@ pose, regardless of how "alert" it also is.
   characteristic as the plain detector list and everything else in this framework. Fine for one
   NPC; worth throttling (e.g. only rescanning every few frames) if this pattern gets reused
   across many animated NPCs at once.
-- **Known edge case, not guarded against:** if a group detector's result flickers rapidly
-  (e.g. right at the boundary of `DangerDetectRange`), the "fresh idle session" check in
-  `DetermineIdleState` (`CurrentState != idleName`) would re-roll the Blink threshold every such
-  flicker. Not addressed speculatively — same "verify empirically before adding complexity"
-  approach as the rest of this doc.
+- **Flicker at the detector's own boundary — addressed, not just flagged.** A raw group signal
+  (e.g. Alert's `DangerDetectRange` check) can legitimately flip on/off rapidly for a genuinely
+  plausible reason, not just a theoretical edge case: an NPC that skirmishes crosses that
+  boundary back and forth as part of normal behavior, not as a rare fluke. `DetermineState` now
+  resolves the group through `AnimationController.ResolveGroupPrefix` rather than the raw
+  detector poll directly — it holds the last active group for `GroupSignalBufferSeconds` (1.5s,
+  a flat framework constant, not derived from anything vanilla) after the raw signal stops being
+  reported, restarting the hold every tick the signal is live again. This is what actually
+  prevents `DetermineIdleState`'s "fresh idle session" check (`CurrentState != idleName`) from
+  re-rolling the Blink threshold on every boundary crossing, and prevents Walking/Idle/Blink/
+  SpecialIdle from visibly flickering between grouped and bare flavors. `AnimationRuntime` gained
+  `LastActiveGroup`/`GroupSignalAge` to support this — same "age since last seen" shape as
+  `AttackSignalAge`, but restarted every live tick rather than on discrete trigger events, since
+  group detectors are polled continuously rather than pulsed.
 
 ---
 
