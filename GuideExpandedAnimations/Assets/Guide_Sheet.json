@@ -53,6 +53,29 @@
       "frameCount": 4,
       "fps": 4,
       "loop": "Loop"
+    },
+    {
+      "state": "AlertWalking",
+      "row": 7,
+      "frameCount": 8,
+      "fps": 8,
+      "loop": "Loop"
+    },
+    {
+      "state": "AlertBlink",
+      "row": 8,
+      "frameCount": 4,
+      "fps": 10,
+      "loop": "Once"
+    },
+    {
+      "state": "AlertSpecialIdle",
+      "row": 9,
+      "frameCount": 3,
+      "fps": 4,
+      "loop": "Once",
+      "intervalMin": 8,
+      "intervalMax": 18
     }
   ],
   "overlays": []

@@ -318,39 +318,57 @@ with eyes closed, authored as its own row, sidesteps that entirely.
 
 ---
 
-## 12. Alert (Idle-only, first real Detector List use case)
+## 12. Alert and the State-Group Pattern
 
 §2's `RegisterStateDetector` example (`npc.velocity.Y > 2f ? "Falling" : null`) was always
-hypothetical — no content mod actually used the detector list until now. Alert is the first real
-one, and confirms the extension point works end-to-end for its intended purpose: a content mod
-adding a new competing state without touching `AnimationController` at all.
+hypothetical — Alert is the first content mod to actually use the detector list, and it started
+as exactly that: a plain detector returning `"AlertIdle"` directly, with the detector itself
+hand-checking `npc.velocity` to stay out of Walking's way. That worked for an Idle-only slice,
+but didn't scale to "Alert also has its own Walking/Blink/SpecialIdle" — those live in
+completely different resolution paths (`DetermineIdleState`'s hardcoded name checks, and Blink's
+own per-instance runtime timers) that a plain `NPC -> string` detector has no way to reach.
 
-**Status: implemented, Idle-only** (`GuideExpandedAnimations/GuideAnimationSetup.cs`) — a
-deliberately small first slice, not the full "layered condition" idea (a future pass could add
-AlertWalking/AlertSpecialIdle/etc. so Alert modifies every state rather than only substituting
-for Idle; not attempted here).
+**Status: implemented as a new, distinct mechanism — the state-group pattern —
+not a bigger plain detector.** A *group* detector (`AnimationController.RegisterStateGroupDetector`,
+same `StateDetector` delegate shape, different list and meaning) returns a prefix (`"Alert"`) or
+null, rather than a full state name. `DetermineState`, the Walking gate, and `DetermineIdleState`
+all resolve `Walking`/`Idle`/`Blink`/`SpecialIdle` through a new
+`AnimationController.TryResolveGroupedClip` helper: try `prefix + baseName` first, fall back to
+the bare name. `Attacking`/`Talk`/`Sitting` are deliberately never grouped — they're ranked above
+group resolution entirely, so an NPC already mid-attack always shows Attacking, never an Alert
+pose, regardless of how "alert" it also is.
 
-- **A true competing state, not an Idle-family variant like Blink.** Registered via
-  `AnimationController.RegisterStateDetector`, which runs in `DetermineState` after
-  Attacking/Talk/Sitting but before the Walking gate — exactly the right slot: Alert should
-  never override an NPC that's actually already attacking, but should outrank plain Walking/Idle
-  when a threat is nearby.
-- **Detection is `NPCID.Sets.DangerDetectRange[Type]`-based** (confirmed against
+- **`GuideExpandedAnimations/GuideAnimationSetup.cs`'s detector shrank, not grew**, once this
+  landed: `DetectAlertGroup` is just "is a threat nearby → `\"Alert\"` : `null`" — no velocity
+  branching. The engine's own Walking-gate/`DetermineIdleState` generalization now decides
+  `AlertWalking` vs `AlertIdle` vs `AlertBlink` vs `AlertSpecialIdle` vs their bare equivalents,
+  generically, for any future group the same way.
+- **Detection is still `NPCID.Sets.DangerDetectRange[Type]`-based** (confirmed against
   docs.tmodloader.net: pixel radius a town NPC uses to engage enemies, `-1` sentinel meaning
   vanilla's own 200px default) plus a proximity scan over `Main.npc` for anything active,
-  non-friendly, and damaging. That "hostile" combination is a reasonable heuristic, not a single
-  confirmed vanilla field the way `DangerDetectRange` itself is — flagged as such in code.
-- **No AlertWalking yet, so the detector explicitly steps aside while the NPC has velocity**
-  (`return null` on nonzero `npc.velocity`), falling through to ordinary Walking rather than
-  freezing a stationary Alert pose on a moving NPC. This is the same "no clip for that
-  combination → play the next best animation" graceful-degradation spirit as §3, just enforced
-  by the detector's own logic instead of the states dictionary lookup, since the gap here is
-  motion-context-shaped rather than "clip doesn't exist."
-- **Known cost, not yet addressed:** the detector (and its proximity scan) runs once per render
-  frame per animated NPC that reaches this point in `DetermineState`, not once per logic tick —
-  same draw-time-only characteristic as everything else in this framework. Fine for one NPC;
-  worth throttling (e.g. only rescanning every few frames) if this pattern gets reused across
-  many animated NPCs at once.
+  non-friendly, and damaging — a reasonable heuristic, not a single confirmed vanilla field the
+  way `DangerDetectRange` itself is.
+- **Once-mode hold-to-completion (`HoldInProgressSpecialIdle`, Blink's own "still mid-playthrough"
+  check) now matches by suffix** (`EndsWith("SpecialIdle")` / `EndsWith("Blink")`) instead of the
+  literal bare name, so a grouped flavor like `AlertSpecialIdle` gets the identical
+  hold-to-completion guarantee without either check needing to know which groups exist or
+  re-derive the current tick's prefix — a Once-mode clip that already started just finishes what
+  it started, group or no group.
+- **Deliberate simplification: Blink/SpecialIdle timers are shared across groups, not doubled per
+  group.** One `NextBlinkAtLoopCount`, one `SpecialIdleClock` — whichever flavor happens to be
+  active when the shared timer fires is what gets shown. Switching groups mid-idle-session
+  already naturally resets the loop counter regardless (any state-name change calls
+  `AnimationPlayer.Play`), so nothing extra was needed to make this consistent.
+- **Known cost, not yet addressed:** group detectors run once per render frame per animated NPC
+  that reaches this point in `DetermineState`, not once per logic tick — same draw-time-only
+  characteristic as the plain detector list and everything else in this framework. Fine for one
+  NPC; worth throttling (e.g. only rescanning every few frames) if this pattern gets reused
+  across many animated NPCs at once.
+- **Known edge case, not guarded against:** if a group detector's result flickers rapidly
+  (e.g. right at the boundary of `DangerDetectRange`), the "fresh idle session" check in
+  `DetermineIdleState` (`CurrentState != idleName`) would re-roll the Blink threshold every such
+  flicker. Not addressed speculatively — same "verify empirically before adding complexity"
+  approach as the rest of this doc.
 
 ---
 

@@ -173,6 +173,16 @@ and the computed frame-center origin, exactly as before this schema addition.)
    overlay mechanism's cross-state reach wasn't worth its per-state alignment cost here. The two
    mechanisms coexist; a content mod picks whichever fits a given NPC.
 
+**State groups** (not a true state themselves — a prefix modifier over Walking/Idle/Blink/
+SpecialIdle only; see `ANIMFRAMEWORK_NEW_FEATURES.md` §12): a registered `RegisterStateGroupDetector`
+picks an active prefix (e.g. `"Alert"`), and each of those four names is looked up as
+`{prefix}{Name}` first, falling back to the bare name whenever a grouped flavor isn't authored.
+Attacking/Talk/Sitting are never grouped — a threat being nearby doesn't change how Guide
+attacks or talks, only how he stands/walks/blinks/varies when he isn't doing either. Alert is
+the first (and currently only) registered group, covering `AlertIdle`/`AlertWalking`/
+`AlertBlink`/`AlertSpecialIdle`, all derived from `NPCID.Sets.DangerDetectRange[Type]`-based
+proximity to hostile NPCs.
+
 **Explicitly deferred to later passes:**
 - Triggered/one-shot secondary effect animations (e.g. directional attack "gust" effect) —
   conceptually distinct from the Talk overlay: event-triggered (fires on state transition, e.g.

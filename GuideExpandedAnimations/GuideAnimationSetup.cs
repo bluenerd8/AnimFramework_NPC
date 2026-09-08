@@ -23,15 +23,14 @@ namespace GuideExpandedAnimations
         {
             AnimationRegistry.Register(NPCID.Guide, BuildGuideAnimationSet);
 
-            // Basic Alert state, Idle-only for now (see ANIMFRAMEWORK_NEW_FEATURES.md's Alert
-            // notes): a real competing state, not an Idle-family variant like Blink — registered
-            // via the detector list so it ranks above Walking/Idle in DetermineState's order
-            // (same slot Falling-style checks were designed for), but still below
-            // Attacking/Talk/Sitting, which is exactly right — an NPC actually mid-attack should
-            // show Attacking, not Alert. No AlertWalking authored yet, so the detector itself
-            // steps aside (returns null) whenever the NPC has velocity, deferring to ordinary
-            // Walking rather than freezing a stationary Alert pose on a moving NPC.
-            AnimationController.RegisterStateDetector(DetectAlert);
+            // Alert state group (see ANIMFRAMEWORK_NEW_FEATURES.md's Alert notes): registered via
+            // RegisterStateGroupDetector, not the plain detector list — this just reports whether
+            // Alert is active ("Alert" or null), and AnimationController's own Walking-gate/
+            // DetermineIdleState resolution decides which of AlertWalking/AlertIdle/AlertBlink/
+            // AlertSpecialIdle actually applies (falling back to the bare state whenever a
+            // grouped flavor isn't authored). No velocity branching needed here at all — that's
+            // exactly the point of the group mechanism over the old ad hoc detector.
+            AnimationController.RegisterStateGroupDetector(DetectAlertGroup);
         }
 
         private AnimationSet BuildGuideAnimationSet()
@@ -39,16 +38,13 @@ namespace GuideExpandedAnimations
             return SheetLayoutLoader.Load(Mod, "Assets/Guide_Sheet.json");
         }
 
-        private static string DetectAlert(NPC npc)
+        private static string DetectAlertGroup(NPC npc)
         {
-            if (npc.velocity != Vector2.Zero)
-                return null; // no AlertWalking yet — stay out of Walking's way entirely
-
             int range = NPCID.Sets.DangerDetectRange[npc.type];
             if (range <= 0)
                 range = DefaultDangerDetectRange;
 
-            return IsHostileNearby(npc, range) ? "AlertIdle" : null;
+            return IsHostileNearby(npc, range) ? "Alert" : null;
         }
 
         /// <summary>

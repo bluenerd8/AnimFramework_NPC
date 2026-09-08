@@ -15,9 +15,10 @@ namespace AnimFramework.Animation
     /// class and the AnimationRegistry/AnimatedGlobalNPC registry path), so the two don't
     /// duplicate this logic against each other.
     ///
-    /// Public surface is intentionally narrow — just <see cref="RegisterStateDetector"/>, the
-    /// one thing content mods need to reach from outside this library assembly. Everything else
-    /// here is `internal`, called only by the two attachment classes in this same assembly.
+    /// Public surface is intentionally narrow — <see cref="RegisterStateDetector"/> and
+    /// <see cref="RegisterStateGroupDetector"/> are the only things content mods need to reach
+    /// from outside this library assembly. Everything else here is `internal`, called only by
+    /// the two attachment classes in this same assembly.
     /// </summary>
     public static class AnimationController
     {
@@ -44,6 +45,77 @@ namespace AnimFramework.Animation
         {
             if (detector != null)
                 _detectors.Add(detector);
+        }
+
+        // --- State-group pattern (see ANIMFRAMEWORK_NEW_FEATURES.md's Alert notes) ---
+        //
+        // Distinct from the plain detector list above: a plain StateDetector returns a full
+        // override state name to jump to directly (e.g. "Falling"). A group detector instead
+        // returns a *prefix* (e.g. "Alert") applied only to Walking/Idle/Blink/SpecialIdle — the
+        // "idle-family" cluster that has no vanilla-bound signal of its own. Attacking/Talk/
+        // Sitting are never grouped; a plain detector's direct override still wins outright over
+        // group resolution, same priority order as before this existed. Reuses the same
+        // StateDetector delegate shape (NPC -> string) since the signature need is identical,
+        // even though the returned string means something different in each list.
+        private static readonly List<StateDetector> _groupDetectors = new List<StateDetector>();
+
+        /// <summary>
+        /// Registers a state-group selector: given the NPC, return the prefix to apply to
+        /// Walking/Idle/Blink/SpecialIdle lookups this tick (e.g. "Alert" tries "AlertWalking"
+        /// before falling back to plain "Walking"), or null/empty for no group. Detectors run in
+        /// registration order; the first non-null, non-empty result wins outright — unlike the
+        /// plain detector list, there's no "does a clip exist for this" check here, because a
+        /// missing grouped clip degrades gracefully per-lookup anyway (see
+        /// <see cref="TryResolveGroupedClip"/>), so a group can be "active" even for an NPC that
+        /// hasn't authored a single grouped clip — it just silently behaves identically to no
+        /// group being active in that case.
+        /// </summary>
+        public static void RegisterStateGroupDetector(StateDetector detector)
+        {
+            if (detector != null)
+                _groupDetectors.Add(detector);
+        }
+
+        private static string RunRegisteredGroupDetectors(NPC npc)
+        {
+            for (int i = 0; i < _groupDetectors.Count; i++)
+            {
+                string result = _groupDetectors[i](npc);
+                if (!string.IsNullOrEmpty(result))
+                    return result;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Resolves <paramref name="baseName"/> against an active group prefix, preferring the
+        /// grouped flavor (<c>prefix + baseName</c>) when both the prefix is non-empty and that
+        /// exact clip is authored, falling back to the bare <paramref name="baseName"/>
+        /// otherwise. Same graceful-degradation spirit as every other optional piece here — an
+        /// NPC can author only some grouped flavors (or none) and everything still resolves
+        /// correctly to whatever's actually available.
+        /// </summary>
+        private static bool TryResolveGroupedClip(AnimationSet set, string prefix, string baseName, out string resolvedName, out AnimationClip clip)
+        {
+            if (!string.IsNullOrEmpty(prefix))
+            {
+                string groupedName = prefix + baseName;
+                if (set.States.TryGetValue(groupedName, out clip))
+                {
+                    resolvedName = groupedName;
+                    return true;
+                }
+            }
+
+            if (set.States.TryGetValue(baseName, out clip))
+            {
+                resolvedName = baseName;
+                return true;
+            }
+
+            resolvedName = null;
+            clip = null;
+            return false;
         }
 
         internal static bool PreDraw(NPC npc, AnimationRuntime runtime, SpriteBatch spriteBatch, Vector2 screenPos, Color drawColor)
@@ -159,18 +231,29 @@ namespace AnimFramework.Animation
             if (state != null)
                 return state;
 
-            // A mid-playthrough Once-mode SpecialIdle is held to completion before anything
-            // below (including Walking) can reclaim the state — see this method's own doc
-            // comment for why this can't live inside DetermineIdleState like the rest of
-            // SpecialIdle's logic does.
+            // A mid-playthrough Once-mode SpecialIdle (of either the bare or a grouped flavor —
+            // see HoldInProgressSpecialIdle) is held to completion before anything below
+            // (including Walking) can reclaim the state — see this method's own doc comment for
+            // why this can't live inside DetermineIdleState like the rest of SpecialIdle's logic
+            // does.
             state = HoldInProgressSpecialIdle(runtime, set);
             if (state != null)
                 return state;
 
-            if (npc.velocity != Vector2.Zero && set.States.ContainsKey("Walking"))
-                return "Walking";
+            // State group resolution (see ANIMFRAMEWORK_NEW_FEATURES.md's Alert notes): a
+            // registered group detector picks an active prefix (e.g. "Alert") applied to
+            // Walking/Idle/Blink/SpecialIdle only — Attacking/Talk/Sitting above are never
+            // grouped, and override detectors above already won outright if they fired. Empty
+            // prefix (no group active, or none registered) behaves identically to before this
+            // feature existed.
+            string groupPrefix = RunRegisteredGroupDetectors(npc) ?? string.Empty;
 
-            return DetermineIdleState(runtime, set);
+            string walkName;
+            AnimationClip walkClip;
+            if (npc.velocity != Vector2.Zero && TryResolveGroupedClip(set, groupPrefix, "Walking", out walkName, out walkClip))
+                return walkName;
+
+            return DetermineIdleState(runtime, set, groupPrefix);
         }
 
         /// <summary>
@@ -183,6 +266,13 @@ namespace AnimFramework.Animation
         /// of the Walking gate, rather than where the rest of SpecialIdle's logic lives in
         /// DetermineIdleState, specifically so it can out-rank that gate.
         ///
+        /// Matches by suffix (<c>EndsWith("SpecialIdle")</c>) rather than the literal name
+        /// "SpecialIdle", so a grouped flavor (e.g. "AlertSpecialIdle") gets the exact same
+        /// hold-to-completion guarantee without this method needing to know which groups exist
+        /// or what the *current* tick's group resolves to — once a Once-mode SpecialIdle-family
+        /// clip has started, it finishes what it started even if the group that picked it
+        /// flickers away mid-playthrough.
+        ///
         /// Scoped to Loop == Once only: <c>AnimationPlayer.IsFinished</c> never goes true for
         /// Loop-mode clips (see AnimationPlayer.GetCurrentFrame), so applying this hold to a
         /// Loop-mode SpecialIdle would trap the NPC in it forever. Loop-mode SpecialIdle has no
@@ -191,12 +281,12 @@ namespace AnimFramework.Animation
         /// </summary>
         private static string HoldInProgressSpecialIdle(AnimationRuntime runtime, AnimationSet set)
         {
-            if (runtime.CurrentState != "SpecialIdle" || runtime.StatePlayer.IsFinished)
+            if (runtime.CurrentState == null || !runtime.CurrentState.EndsWith("SpecialIdle") || runtime.StatePlayer.IsFinished)
                 return null;
 
             AnimationClip specialClip;
-            if (set.States.TryGetValue("SpecialIdle", out specialClip) && specialClip.Loop == LoopMode.Once)
-                return "SpecialIdle";
+            if (set.States.TryGetValue(runtime.CurrentState, out specialClip) && specialClip.Loop == LoopMode.Once)
+                return runtime.CurrentState;
 
             return null;
         }
@@ -204,6 +294,11 @@ namespace AnimFramework.Animation
         /// <summary>
         /// Idle, with the occasional SpecialIdle and/or Blink variant mixed in — framework-
         /// original logic, no vanilla signal to bind to (per the spec's Baseline Animation Set).
+        /// Group-aware: <paramref name="groupPrefix"/> (from a registered state-group detector,
+        /// e.g. "Alert") is tried first for each of Idle/Blink/SpecialIdle via
+        /// <see cref="TryResolveGroupedClip"/>, falling back to the bare name — an NPC can author
+        /// only some grouped flavors (or none at all, or no groups registered) and this still
+        /// resolves correctly.
         ///
         /// SpecialIdle reuses the same randomized-interval mechanism as the timed-overlay Blink
         /// (<see cref="RollNextInterval"/>, <see cref="AnimationClip.IntervalMin"/>/
@@ -211,7 +306,9 @@ namespace AnimFramework.Animation
         /// idle, wait out a freshly-rolled interval on a real-time clock, then switch in for one
         /// play-through. The in-progress hold for a live SpecialIdle playthrough is handled
         /// upstream, in DetermineState — see HoldInProgressSpecialIdle — so this method only ever
-        /// sees SpecialIdle either not yet started or already finished.
+        /// sees SpecialIdle either not yet started or already finished. Its timer
+        /// (<see cref="AnimationRuntime.SpecialIdleClock"/>) is shared across every group rather
+        /// than one per group — whichever flavor is active when it fires is what gets shown.
         ///
         /// Blink here is a *different*, Idle-paired mechanism from the timed overlay of the same
         /// name (see ShouldBlink) — a real sibling state to Idle rather than a layered mark, with
@@ -221,36 +318,43 @@ namespace AnimFramework.Animation
         /// special-casing needed here to make that happen. Triggered by completed Idle loops
         /// (<see cref="AnimationPlayer.GetCompletedLoops"/>) rather than elapsed time, so the
         /// switch always lands on a clean loop boundary instead of an arbitrary mid-cycle moment.
+        /// Its "still mid-playthrough" check matches by suffix (<c>EndsWith("Blink")</c>), same
+        /// reasoning as HoldInProgressSpecialIdle's suffix match — a started Blink-family
+        /// playthrough finishes what it started regardless of the current tick's group.
         /// </summary>
-        private static string DetermineIdleState(AnimationRuntime runtime, AnimationSet set)
+        private static string DetermineIdleState(AnimationRuntime runtime, AnimationSet set, string groupPrefix)
         {
-            if (!set.States.ContainsKey("Idle"))
-                return null;
+            if (runtime.CurrentState != null && runtime.CurrentState.EndsWith("Blink") && !runtime.StatePlayer.IsFinished)
+                return runtime.CurrentState; // still mid-playthrough (velocity is already confirmed 0 this tick)
 
+            string idleName;
+            AnimationClip idleClip;
+            if (!TryResolveGroupedClip(set, groupPrefix, "Idle", out idleName, out idleClip))
+                return null; // not authored (grouped or bare) for this NPC
+
+            string blinkName;
             AnimationClip blinkClip;
-            if (set.States.TryGetValue("Blink", out blinkClip))
+            if (TryResolveGroupedClip(set, groupPrefix, "Blink", out blinkName, out blinkClip))
             {
-                if (runtime.CurrentState == "Blink" && !runtime.StatePlayer.IsFinished)
-                    return "Blink"; // still mid-playthrough (velocity is already confirmed 0 this tick)
-
-                if (runtime.CurrentState != "Idle")
+                if (runtime.CurrentState != idleName)
                 {
-                    // Fresh idle session starting this frame — Idle hasn't actually played a
-                    // single frame yet as of this call (the transition into it happens after
-                    // DetermineState returns, in PreDraw), so StatePlayer's completed-loop count
-                    // still belongs to whatever state was active before this and isn't
-                    // meaningful yet. Roll this session's threshold and start with plain Idle.
+                    // Fresh idle session starting this frame — this flavor of Idle hasn't
+                    // actually played a single frame yet as of this call (the transition into it
+                    // happens after DetermineState returns, in PreDraw), so StatePlayer's
+                    // completed-loop count still belongs to whatever state was active before this
+                    // and isn't meaningful yet. Roll this session's threshold and start idling.
                     runtime.NextBlinkAtLoopCount = RollNextLoopCount(blinkClip);
                 }
                 else if (runtime.StatePlayer.GetCompletedLoops() >= runtime.NextBlinkAtLoopCount)
                 {
-                    return "Blink";
+                    return blinkName;
                 }
             }
 
+            string specialName;
             AnimationClip specialClip;
-            if (!set.States.TryGetValue("SpecialIdle", out specialClip))
-                return "Idle"; // not authored for this NPC — plain Idle only
+            if (!TryResolveGroupedClip(set, groupPrefix, "SpecialIdle", out specialName, out specialClip))
+                return idleName; // not authored (grouped or bare) — this flavor of Idle only
 
             if (!runtime.SpecialIdleClock.IsRunning)
             {
@@ -259,12 +363,12 @@ namespace AnimFramework.Animation
             }
 
             if (runtime.SpecialIdleClock.Elapsed.TotalSeconds < runtime.NextSpecialIdleAt)
-                return "Idle";
+                return idleName;
 
             // Window elapsed — fire once, then roll a fresh interval so multiple NPCs sharing
             // this clip don't all play their SpecialIdle in lockstep (same reasoning as Blink).
             runtime.NextSpecialIdleAt = runtime.SpecialIdleClock.Elapsed.TotalSeconds + RollNextInterval(specialClip);
-            return "SpecialIdle";
+            return specialName;
         }
 
         /// <summary>
