@@ -274,8 +274,9 @@ namespace AnimFramework.Animation
             // see HoldInProgressSpecialIdle) is held to completion before anything below
             // (including Walking) can reclaim the state — see this method's own doc comment for
             // why this can't live inside DetermineIdleState like the rest of SpecialIdle's logic
-            // does.
-            state = HoldInProgressSpecialIdle(runtime, set);
+            // does. Velocity-gated: it only holds while the NPC is still actually stationary, so
+            // real walking cuts it off immediately rather than finishing the gesture mid-stride.
+            state = HoldInProgressSpecialIdle(npc, runtime, set);
             if (state != null)
                 return state;
 
@@ -298,21 +299,31 @@ namespace AnimFramework.Animation
         }
 
         /// <summary>
-        /// Keeps a Once-mode SpecialIdle clip playing to completion even if velocity blips
-        /// nonzero mid-clip — vanilla town NPC AI's wander velocity is erratic tick-to-tick, and
-        /// without this a single stray tick of nonzero velocity mid-playthrough would hand
-        /// priority to Walking (checked directly in DetermineState, above DetermineIdleState)
-        /// and cut the clip off before <c>IsFinished</c>. Same "hold until finished" contract
-        /// Attacking's Once-mode clips get (see DetermineAttackingState) — checked here, ahead
-        /// of the Walking gate, rather than where the rest of SpecialIdle's logic lives in
-        /// DetermineIdleState, specifically so it can out-rank that gate.
+        /// Keeps a Once-mode SpecialIdle clip playing to completion while the NPC is still
+        /// stationary, so it isn't cut off before <c>IsFinished</c> by e.g. Talk/Attacking
+        /// interrupting it. Same "hold until finished" contract Attacking's Once-mode clips get
+        /// (see DetermineAttackingState) — checked here, ahead of the Walking gate, rather than
+        /// where the rest of SpecialIdle's logic lives in DetermineIdleState, specifically so it
+        /// can out-rank that gate for those other interrupters.
+        ///
+        /// Velocity-gated (<c>npc.velocity != Vector2.Zero</c> bails out before even looking at
+        /// <c>CurrentState</c>): real walking must cut a SpecialIdle/AlertSpecialIdle gesture off
+        /// immediately rather than let it play out over a moving NPC, which read as the gesture
+        /// "accidentally" continuing mid-stride. This used to hold across *any* nonzero-velocity
+        /// tick, precisely to smooth over vanilla town NPC AI's erratic tick-to-tick wander
+        /// velocity — but that smoothing is exactly what let genuine walking sneak a SpecialIdle
+        /// through. The Walking gate right below this method already reads raw
+        /// <c>npc.velocity != Vector2.Zero</c> with no smoothing of its own, so gating the hold
+        /// the same way is consistent rather than a new source of flicker: a single stray
+        /// wander-tick can still cut a SpecialIdle short exactly as readily as it can flicker
+        /// Walking/Idle themselves, and that's an accepted trade-off elsewhere in this file, not
+        /// one unique to this method. Revisit with a small buffer (same shape as
+        /// GroupSignalBufferSeconds) only if that turns out to look choppy in practice.
         ///
         /// Matches by suffix (<c>EndsWith("SpecialIdle")</c>) rather than the literal name
         /// "SpecialIdle", so a grouped flavor (e.g. "AlertSpecialIdle") gets the exact same
         /// hold-to-completion guarantee without this method needing to know which groups exist
-        /// or what the *current* tick's group resolves to — once a Once-mode SpecialIdle-family
-        /// clip has started, it finishes what it started even if the group that picked it
-        /// flickers away mid-playthrough.
+        /// or what the *current* tick's group resolves to.
         ///
         /// Scoped to Loop == Once only: <c>AnimationPlayer.IsFinished</c> never goes true for
         /// Loop-mode clips (see AnimationPlayer.GetCurrentFrame), so applying this hold to a
@@ -320,8 +331,11 @@ namespace AnimFramework.Animation
         /// defined play-duration semantics yet — not attempted here; author SpecialIdle as Once
         /// until that's designed.
         /// </summary>
-        private static string HoldInProgressSpecialIdle(AnimationRuntime runtime, AnimationSet set)
+        private static string HoldInProgressSpecialIdle(NPC npc, AnimationRuntime runtime, AnimationSet set)
         {
+            if (npc.velocity != Vector2.Zero)
+                return null; // walking resumed — let the Walking gate below reclaim the state now, not once the clip finishes
+
             if (runtime.CurrentState == null || !runtime.CurrentState.EndsWith("SpecialIdle") || runtime.StatePlayer.IsFinished)
                 return null;
 

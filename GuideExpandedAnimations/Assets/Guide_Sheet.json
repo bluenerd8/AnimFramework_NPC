@@ -30,8 +30,8 @@
       "frameCount": 3,
       "fps": 4,
       "loop": "Once",
-      "intervalMin": 8,
-      "intervalMax": 18
+      "intervalMin": 18,
+      "intervalMax": 28
     },
     {
       "state": "Talk",
@@ -74,8 +74,8 @@
       "frameCount": 3,
       "fps": 4,
       "loop": "Once",
-      "intervalMin": 8,
-      "intervalMax": 18
+      "intervalMin": 18,
+      "intervalMax": 28
     }
   ],
   "overlays": []

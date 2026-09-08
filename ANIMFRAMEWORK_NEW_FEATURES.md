@@ -296,12 +296,17 @@ with eyes closed, authored as its own row, sidesteps that entirely.
   fallback default 0–2 loops) — kept distinct from `intervalMin`/`intervalMax` on purpose, since
   those are seconds; reusing the same fields for two different units depending on which feature
   reads them would be a real footgun, not a simplification.
-- **No hold-to-completion override, unlike SpecialIdle.** SpecialIdle's
-  `HoldInProgressSpecialIdle` deliberately outranks the Walking gate in `DetermineState` so a
-  triggered gesture always finishes even if velocity resumes mid-playthrough. Blink gets no such
-  carve-out: it lives entirely inside `DetermineIdleState`, ranked *below* the Walking gate, so
-  resumed velocity cuts it off immediately with zero special-casing — a deliberate simplicity
-  trade-off, not an oversight.
+- **No hold-to-completion override, unlike SpecialIdle** — though the two behave more alike now
+  than they used to. SpecialIdle's `HoldInProgressSpecialIdle` still outranks the Walking gate in
+  `DetermineState` so a triggered gesture (or its `AlertSpecialIdle` flavor) survives being
+  interrupted by e.g. Talk/Attacking, but it's now velocity-gated: real walking (`npc.velocity !=
+  Vector2.Zero`) cuts it off immediately, same as Blink, rather than holding it to completion
+  regardless of movement — see that method's own doc comment in `AnimationController.cs` for why
+  the earlier "hold across any nonzero-velocity blip" behavior let a SpecialIdle gesture
+  accidentally keep playing over an NPC that had already started walking. Blink never had this
+  carve-out at all: it lives entirely inside `DetermineIdleState`, ranked *below* the Walking
+  gate, so resumed velocity cuts it off immediately with zero special-casing — a deliberate
+  simplicity trade-off, not an oversight.
 - **Known footgun, documented rather than enforced (same precedent as SpecialIdle's own
   Loop-mode caveat, see `HoldInProgressSpecialIdle`'s doc comment in `AnimationController.cs`):**
   Blink must be authored `Once`. If declared `Loop`, `IsFinished`
