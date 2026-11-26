@@ -110,18 +110,15 @@ namespace AnimFramework.Animation
             // SheetLayoutLoader). Exactly one bound declared = treated as a fixed, non-jittered
             // interval at that value, rather than silently blending an author's number with an
             // arbitrary framework default. Neither declared = the framework default range.
+
             if (intervalMin.HasValue && intervalMax.HasValue)
             {
                 IntervalMin = Math.Min(intervalMin.Value, intervalMax.Value);
                 IntervalMax = Math.Max(intervalMin.Value, intervalMax.Value);
             }
-            else if (intervalMin.HasValue)
+            else if (intervalMin.HasValue || intervalMax.HasValue)
             {
-                IntervalMin = IntervalMax = intervalMin.Value;
-            }
-            else if (intervalMax.HasValue)
-            {
-                IntervalMin = IntervalMax = intervalMax.Value;
+                IntervalMin = IntervalMax = (intervalMin ?? intervalMax).Value;
             }
             else
             {
@@ -136,13 +133,9 @@ namespace AnimFramework.Animation
                 LoopCountMin = Math.Min(loopCountMin.Value, loopCountMax.Value);
                 LoopCountMax = Math.Max(loopCountMin.Value, loopCountMax.Value);
             }
-            else if (loopCountMin.HasValue)
+            else if (loopCountMin.HasValue || loopCountMax.HasValue)
             {
-                LoopCountMin = LoopCountMax = loopCountMin.Value;
-            }
-            else if (loopCountMax.HasValue)
-            {
-                LoopCountMin = LoopCountMax = loopCountMax.Value;
+                LoopCountMin = LoopCountMax = (loopCountMin ?? loopCountMax).Value;
             }
             else
             {
