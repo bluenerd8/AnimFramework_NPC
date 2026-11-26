@@ -1,18 +1,13 @@
 using System.Collections.Generic;
-using System.Diagnostics;
 
 namespace AnimFramework.Animation
 {
     /// <summary>
-    /// Per-instance runtime animation state for one NPC: which state is currently playing, the
-    /// player driving it, and one player per currently-active overlay.
+    /// Per-NPC-instance animation state. Never share one across instances: both attachment
+    /// classes null their reference in <c>Clone</c> so each spawned NPC builds its own, while
+    /// still sharing the cached, immutable <see cref="AnimationSet"/>.
     ///
-    /// Must never be shared by reference across NPC instances of the same type — tModLoader's
-    /// default MemberwiseClone would otherwise copy this reference onto every spawned instance,
-    /// so all of them would animate in perfect lockstep off one shared Stopwatch. See
-    /// AnimatedNPC.Clone / AnimatedGlobalNPC.Clone, which null their runtime field on clone so
-    /// each spawned NPC lazily builds its own fresh instance here, while still sharing the same
-    /// cached, immutable <see cref="AnimationSet"/>.
+    /// All times are <see cref="AnimationClock.Now"/> readings; null means "not set yet".
     /// </summary>
     public class AnimationRuntime
     {
@@ -22,95 +17,41 @@ namespace AnimFramework.Animation
         }
 
         public AnimationSet Set { get; }
+
+        /// <summary>State chosen by the last update, or null when no authored clip applies (vanilla draws instead).</summary>
         public string CurrentState { get; set; }
+
+        /// <summary>Whether state has been resolved at least once. Lets the first draw resolve it when no update has run yet (e.g. bestiary icons).</summary>
+        public bool HasUpdated { get; set; }
+
         public AnimationPlayer StatePlayer { get; } = new AnimationPlayer();
         public Dictionary<AnimationClip, AnimationPlayer> OverlayPlayers { get; } = new Dictionary<AnimationClip, AnimationPlayer>();
         public HashSet<AnimationClip> ActiveOverlays { get; } = new HashSet<AnimationClip>();
 
-        /// <summary>
-        /// Restarted by <see cref="AnimationController.NotifyAttackTriggered"/> each time a
-        /// type-0/1/2 attack hook fires for this NPC. Not running (never restarted) until the
-        /// first such hook fires — see <see cref="AnimationController"/>'s Attacking handling.
-        /// </summary>
-        public Stopwatch AttackSignalAge { get; } = new Stopwatch();
+        // --- Attacking: pulsed by TownNPCAttackProj/TownNPCAttackMagic ---
+        public double? LastAttackSignalAt { get; set; }
 
-        /// <summary>
-        /// Bumped once per <see cref="AnimationController.NotifyAttackTriggered"/> call —
-        /// identifies *which* real attack-start signal is currently live, distinct from how long
-        /// ago it fired (<see cref="AttackSignalAge"/>). Lets a Once-mode Attacking clip tell
-        /// "still the same attack I already played for" from "a genuinely new one arrived" —
-        /// see <see cref="LastConsumedAttackSignalId"/> and DetermineAttackingState.
-        /// </summary>
+        /// <summary>Bumped once per attack signal, so a Once-mode clip plays exactly once per attack.</summary>
         public int AttackSignalId { get; set; }
-
-        /// <summary>The <see cref="AttackSignalId"/> a Once-mode Attacking clip has already played a full cycle for.</summary>
         public int LastConsumedAttackSignalId { get; set; }
 
-        /// <summary>
-        /// Bumped once per talk-start edge: either the player's dialog opening with this NPC
-        /// (edge-detected in-place from the level-triggered <c>talkNPC</c> flag — see
-        /// AnimationController.DetermineTalkingState) or a real
-        /// <see cref="AnimationController.NotifyTalkTriggered"/> call (NPC-to-NPC emote-bubble
-        /// chatter via <c>GlobalNPC.PickEmote</c>). Same "identify which signal is currently
-        /// live, distinct from AttackSignalId" role as its Attacking counterpart, driving the
-        /// same "play exactly once per signal" consumption via
-        /// <see cref="LastConsumedTalkSignalId"/>.
-        /// </summary>
+        // --- Talk: player dialog opening (edge-detected) or NPC-to-NPC emote chatter ---
         public int TalkSignalId { get; set; }
-
-        /// <summary>The <see cref="TalkSignalId"/> a Once-mode Talk clip has already played a full cycle for.</summary>
         public int LastConsumedTalkSignalId { get; set; }
-
-        /// <summary>
-        /// Last-seen value of <c>Main.LocalPlayer.talkNPC == npc.whoAmI</c> — this flag is
-        /// level-triggered (true for the whole time the player's dialog box is open), so this is
-        /// what lets DetermineTalkingState detect the rising edge itself and bump
-        /// <see cref="TalkSignalId"/> exactly once per conversation, rather than once per tick.
-        /// </summary>
         public bool WasPlayerTalking { get; set; }
 
-        /// <summary>Real-time clock behind the Blink timed overlay — see AnimationController.ShouldBlink.</summary>
-        public Stopwatch BlinkClock { get; } = new Stopwatch();
+        // --- Timers ---
+        /// <summary>When the Blink overlay next fires.</summary>
+        public double? NextBlinkAt { get; set; }
 
-        /// <summary>Elapsed-seconds-on-<see cref="BlinkClock"/> timestamp for this NPC's next scheduled blink.</summary>
-        public double NextBlinkAt { get; set; }
+        /// <summary>When SpecialIdle next fires (shared across groups).</summary>
+        public double? NextSpecialIdleAt { get; set; }
 
-        /// <summary>Real-time clock behind the SpecialIdle occasional-variant timer — see AnimationController.DetermineIdleState.</summary>
-        public Stopwatch SpecialIdleClock { get; } = new Stopwatch();
+        /// <summary>Completed Idle loops before the next IdleBlink (shared across groups).</summary>
+        public int NextIdleBlinkAtLoopCount { get; set; }
 
-        /// <summary>Elapsed-seconds-on-<see cref="SpecialIdleClock"/> timestamp for this NPC's next scheduled SpecialIdle roll.</summary>
-        public double NextSpecialIdleAt { get; set; }
-
-        /// <summary>
-        /// Threshold, in completed Idle loops (see <see cref="AnimationPlayer.GetCompletedLoops"/>),
-        /// for this NPC's next Blink. Distinct from <see cref="NextBlinkAt"/> above — that field
-        /// belongs to the older timed-overlay Blink mechanism (seconds-based, layers on top of
-        /// any state); this one belongs to the Idle-paired Blink *state* (loop-count-based,
-        /// Idle-only, no override/hold-to-completion). The two are independent mechanisms a
-        /// content mod can choose between — see AnimationController.DetermineIdleState. Needs no
-        /// separate clock of its own: it's compared directly against
-        /// <see cref="AnimationRuntime.StatePlayer"/>'s own completed-loop count, which already
-        /// resets naturally whenever Idle is freshly (re-)entered.
-        /// </summary>
-        public int NextBlinkAtLoopCount { get; set; }
-
-        /// <summary>
-        /// Most recent non-empty prefix a registered state-group detector reported — see
-        /// AnimationController.ResolveGroupPrefix. Kept so a brief gap in the raw signal (e.g. an
-        /// NPC skirmishing back and forth across DangerDetectRange's boundary) can still resolve
-        /// to the same group during <see cref="GroupSignalAge"/>'s buffer window, rather than the
-        /// group flickering on and off with every boundary crossing.
-        /// </summary>
+        // --- State groups: held briefly after the raw signal drops to avoid flicker ---
         public string LastActiveGroup { get; set; }
-
-        /// <summary>
-        /// Time since a group detector last reported <see cref="LastActiveGroup"/> active —
-        /// restarted every tick the raw signal is live, so it only starts counting up once the
-        /// signal actually stops. Unlike <see cref="AttackSignalAge"/> above (which restarts on
-        /// discrete trigger *events* via NotifyAttackTriggered), group detectors are polled fresh
-        /// every tick rather than pulsed, so this restarts on every live tick instead — same
-        /// "how long has it been since I last saw this" role, different signal shape driving it.
-        /// </summary>
-        public Stopwatch GroupSignalAge { get; } = new Stopwatch();
+        public double? LastGroupSignalAt { get; set; }
     }
 }

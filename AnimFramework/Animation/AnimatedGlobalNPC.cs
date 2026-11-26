@@ -8,10 +8,9 @@ using Terraria.ModLoader;
 namespace AnimFramework.Animation
 {
     /// <summary>
-    /// Attaches AnimFramework playback to any NPC type registered via <see cref="AnimationRegistry"/>
-    /// — vanilla or another mod's — without needing to own that NPC's ModNPC class. Opt-in only:
-    /// <see cref="AppliesToEntity"/> gates on registry membership, so unregistered NPC types are
-    /// never instanced here and cost nothing.
+    /// Attaches AnimFramework playback to any NPC type registered with
+    /// <see cref="AnimationRegistry"/>, vanilla or another mod's, without owning its ModNPC
+    /// class. Only instanced for registered types, so everything else costs nothing.
     /// </summary>
     public class AnimatedGlobalNPC : GlobalNPC
     {
@@ -35,31 +34,29 @@ namespace AnimFramework.Animation
             return _runtime;
         }
 
-        public override bool PreDraw(NPC npc, SpriteBatch spriteBatch, Vector2 screenPos, Color drawColor)
+        public override void PostAI(NPC npc)
         {
-            AnimationRuntime runtime = GetRuntime(npc);
-            return AnimationController.PreDraw(npc, runtime, spriteBatch, screenPos, drawColor);
+            AnimationController.Update(npc, GetRuntime(npc));
         }
 
-        // Attacking-state trigger for AttackType 0 (throw) and 1 (shoot) — see
-        // AnimationController.NotifyAttackTriggered for why this hook is safe to observe
-        // without touching its ref parameters, and why melee (type 3) has no equivalent here.
-        // Signature confirmed against docs.tmodloader.net's GlobalNPC reference (1.4-stable).
+        public override bool PreDraw(NPC npc, SpriteBatch spriteBatch, Vector2 screenPos, Color drawColor)
+        {
+            return AnimationController.PreDraw(npc, GetRuntime(npc), spriteBatch, screenPos, drawColor);
+        }
+
+        // Attack triggers for AttackType 0 (throw), 1 (shoot) and 2 (magic). Observational only:
+        // the ref parameters are never touched.
         public override void TownNPCAttackProj(NPC npc, ref int projType, ref int attackDelay)
         {
             AnimationController.NotifyAttackTriggered(npc, GetRuntime(npc));
         }
 
-        // Attacking-state trigger for AttackType 2 (magic) — same caveats as TownNPCAttackProj above.
         public override void TownNPCAttackMagic(NPC npc, ref float auraLightMultiplier)
         {
             AnimationController.NotifyAttackTriggered(npc, GetRuntime(npc));
         }
 
-        // Talk-state trigger for the NPC-to-NPC (and NPC-to-player-without-dialog-open) ambient
-        // chatter case — see AnimatedNPC's copy of this override and
-        // AnimationController.NotifyTalkTriggered's doc comment for the confirmed hook and the
-        // otherAnchor gate.
+        // NPC-to-NPC chatter: only counts when the emote has a conversation target.
         public override int? PickEmote(NPC npc, Player closestPlayer, List<int> emoteList, WorldUIAnchor otherAnchor)
         {
             if (otherAnchor != null)
@@ -68,8 +65,8 @@ namespace AnimFramework.Animation
             return base.PickEmote(npc, closestPlayer, emoteList, otherAnchor);
         }
 
-        // Same MemberwiseClone shared-state hazard as AnimatedNPC.Clone (see its comment) —
-        // without this, every NPC instance of a registered type would share one Stopwatch.
+        // MemberwiseClone would otherwise share one runtime (and its timers) across every
+        // instance of the type, making them animate in lockstep.
         public override GlobalNPC Clone(NPC from, NPC to)
         {
             AnimatedGlobalNPC clone = (AnimatedGlobalNPC)base.Clone(from, to);

@@ -44,14 +44,17 @@ inert unless used:
 
 ```csharp
 public delegate string StateDetector(NPC npc);
-public static void RegisterStateDetector(StateDetector detector);
+public static void RegisterStateDetector(int npcType, StateDetector detector);
 ```
 
 A content mod enables a new state in one line, from its own setup code:
 
 ```csharp
-AnimationController.RegisterStateDetector(npc => npc.velocity.Y > 2f ? "Falling" : null);
+AnimationController.RegisterStateDetector(NPCID.Guide, npc => npc.velocity.Y > 2f ? "Falling" : null);
 ```
+
+Detectors are scoped to one NPC type (changed 2026-11-26, see §13). Before that they were a
+single global list, so one content mod's detector ran for every other mod's animated NPCs too.
 
 **Status: implemented**, in `AnimationController.cs` — the shared state/draw logic layer both
 attachment paths (`AnimatedNPC`, `AnimatedGlobalNPC`) already delegated to. `AnimationController`
@@ -268,7 +271,10 @@ declared JSON rather than hardcoded engine tables.
 
 ---
 
-## 11. Idle-Paired Blink (Loop-Count-Triggered State)
+## 11. Idle-Paired Blink (`IdleBlink`, Loop-Count-Triggered State)
+
+> Renamed from `"Blink"` to `"IdleBlink"` (and `AlertBlink` → `AlertIdleBlink`) on 2026-11-26 so
+> it no longer shares a name with §4's overlay. Use `AnimStates.IdleBlink`.
 
 A second, *different* mechanism sharing the name "Blink" with §4's timed overlay — worth being
 explicit that these are two independent, coexisting options, not one feature replacing the
@@ -282,7 +288,7 @@ with eyes closed, authored as its own row, sidesteps that entirely.
 **Status: implemented**, in `AnimationController.DetermineIdleState`, `AnimationPlayer`, and new
 `AnimationClip`/`AnimationRuntime` fields:
 
-- **A real sibling state to Idle** (`AnimationSet.States["Blink"]`), not a layered mark — same
+- **A real sibling state to Idle** (`AnimationSet.States["IdleBlink"]`), not a layered mark — same
   full-clip authoring as any other state, sharing Idle's texture/frame-size conventions per the
   §9-style per-row overrides if it ever needs to differ.
 - **Triggered by completed Idle loops, not elapsed time** — deliberately different from every
@@ -307,12 +313,9 @@ with eyes closed, authored as its own row, sidesteps that entirely.
   carve-out at all: it lives entirely inside `DetermineIdleState`, ranked *below* the Walking
   gate, so resumed velocity cuts it off immediately with zero special-casing — a deliberate
   simplicity trade-off, not an oversight.
-- **Known footgun, documented rather than enforced (same precedent as SpecialIdle's own
-  Loop-mode caveat, see `HoldInProgressSpecialIdle`'s doc comment in `AnimationController.cs`):**
-  Blink must be authored `Once`. If declared `Loop`, `IsFinished`
-  never goes true (`AnimationPlayer.GetCurrentFrame`), so `DetermineIdleState`'s
-  still-mid-playthrough check never releases it — the NPC would visibly get stuck in Blink
-  forever. Not runtime-validated, same as the equivalent SpecialIdle risk.
+- **Author IdleBlink as `Once`.** The still-mid-playthrough hold now only applies to Once-mode
+  clips (same rule as SpecialIdle), so a Loop-mode IdleBlink no longer gets stuck forever; it
+  just plays for a single tick before Idle reclaims the state, which isn't useful either.
 - **Open question, not yet resolved:** min-loop-count of 0 (the framework default's floor) means
   two Blinks can fire back-to-back with zero Idle loops between them. Estimated acceptable at the
   chosen default range (0–2: roughly 1-in-9 chance of one immediate repeat, 1-in-27 of two) and
@@ -337,16 +340,16 @@ own per-instance runtime timers) that a plain `NPC -> string` detector has no wa
 not a bigger plain detector.** A *group* detector (`AnimationController.RegisterStateGroupDetector`,
 same `StateDetector` delegate shape, different list and meaning) returns a prefix (`"Alert"`) or
 null, rather than a full state name. `DetermineState`, the Walking gate, and `DetermineIdleState`
-all resolve `Walking`/`Idle`/`Blink`/`SpecialIdle` through a new
+all resolve `Walking`/`Idle`/`IdleBlink`/`SpecialIdle` through a new
 `AnimationController.TryResolveGroupedClip` helper: try `prefix + baseName` first, fall back to
 the bare name. `Attacking`/`Talk`/`Sitting` are deliberately never grouped — they're ranked above
 group resolution entirely, so an NPC already mid-attack always shows Attacking, never an Alert
 pose, regardless of how "alert" it also is.
 
-- **`GuideExpandedAnimations/GuideAnimationSetup.cs`'s detector shrank, not grew**, once this
+- **`AnimFrameworkExample/GuideAnimationSetup.cs`'s detector shrank, not grew**, once this
   landed: `DetectAlertGroup` is just "is a threat nearby → `\"Alert\"` : `null`" — no velocity
   branching. The engine's own Walking-gate/`DetermineIdleState` generalization now decides
-  `AlertWalking` vs `AlertIdle` vs `AlertBlink` vs `AlertSpecialIdle` vs their bare equivalents,
+  `AlertWalking` vs `AlertIdle` vs `AlertIdleBlink` vs `AlertSpecialIdle` vs their bare equivalents,
   generically, for any future group the same way.
 - **Detection is still `NPCID.Sets.DangerDetectRange[Type]`-based** (confirmed against
   docs.tmodloader.net: pixel radius a town NPC uses to engage enemies, `-1` sentinel meaning
@@ -354,21 +357,19 @@ pose, regardless of how "alert" it also is.
   non-friendly, and damaging — a reasonable heuristic, not a single confirmed vanilla field the
   way `DangerDetectRange` itself is.
 - **Once-mode hold-to-completion (`HoldInProgressSpecialIdle`, Blink's own "still mid-playthrough"
-  check) now matches by suffix** (`EndsWith("SpecialIdle")` / `EndsWith("Blink")`) instead of the
+  check) now matches by suffix** (`EndsWith("SpecialIdle")` / `EndsWith("IdleBlink")`) instead of the
   literal bare name, so a grouped flavor like `AlertSpecialIdle` gets the identical
   hold-to-completion guarantee without either check needing to know which groups exist or
   re-derive the current tick's prefix — a Once-mode clip that already started just finishes what
   it started, group or no group.
 - **Deliberate simplification: Blink/SpecialIdle timers are shared across groups, not doubled per
-  group.** One `NextBlinkAtLoopCount`, one `SpecialIdleClock` — whichever flavor happens to be
+  group.** One `NextIdleBlinkAtLoopCount`, one `NextSpecialIdleAt` — whichever flavor happens to be
   active when the shared timer fires is what gets shown. Switching groups mid-idle-session
   already naturally resets the loop counter regardless (any state-name change calls
   `AnimationPlayer.Play`), so nothing extra was needed to make this consistent.
-- **Known cost, not yet addressed:** group detectors run once per render frame per animated NPC
-  that reaches this point in `DetermineState`, not once per logic tick — same draw-time-only
-  characteristic as the plain detector list and everything else in this framework. Fine for one
-  NPC; worth throttling (e.g. only rescanning every few frames) if this pattern gets reused
-  across many animated NPCs at once.
+- **Cost:** state resolution (detectors included) now runs once per logic tick from `PostAI`,
+  not once per render frame (changed 2026-11-26, see §13). Alert's scan over `Main.npc` is
+  therefore 60 times a second per animated Guide regardless of FPS.
 - **Flicker at the detector's own boundary — addressed, not just flagged.** A raw group signal
   (e.g. Alert's `DangerDetectRange` check) can legitimately flip on/off rapidly for a genuinely
   plausible reason, not just a theoretical edge case: an NPC that skirmishes crosses that
@@ -380,26 +381,52 @@ pose, regardless of how "alert" it also is.
   prevents `DetermineIdleState`'s "fresh idle session" check (`CurrentState != idleName`) from
   re-rolling the Blink threshold on every boundary crossing, and prevents Walking/Idle/Blink/
   SpecialIdle from visibly flickering between grouped and bare flavors. `AnimationRuntime` gained
-  `LastActiveGroup`/`GroupSignalAge` to support this — same "age since last seen" shape as
-  `AttackSignalAge`, but restarted every live tick rather than on discrete trigger events, since
+  `LastActiveGroup`/`LastGroupSignalAt` to support this — same "time last seen" shape as
+  `LastAttackSignalAt`, but restarted every live tick rather than on discrete trigger events, since
   group detectors are polled continuously rather than pulsed.
+
+---
+
+## 13. Library Hardening Pass (2026-11-26)
+
+Changes made once the feature set was in place, aimed at making the framework safe for other
+mods to build on:
+
+- **Per-type detectors.** `RegisterStateDetector(npcType, ...)` and
+  `RegisterStateGroupDetector(npcType, ...)` replace the global versions, so one content mod's
+  detectors never affect another mod's NPCs.
+- **Failed builds degrade instead of crashing.** `AnimationRegistry` no longer wraps builders in
+  `Lazy<T>` (which cached the exception and rethrew it on every frame). A throwing builder, or a
+  throwing `AnimatedNPC.BuildAnimationSet()`, is logged once and that NPC uses vanilla drawing.
+  Registering the same NPC type twice now logs a warning.
+- **Pause-aware timing.** `AnimationClock` replaces every per-runtime `Stopwatch`. It stops while
+  `Main.gamePaused`, so animations and interval timers freeze on pause. Runtime timers are now
+  nullable timestamps (`LastAttackSignalAt`, `NextBlinkAt`, `NextSpecialIdleAt`,
+  `LastGroupSignalAt`).
+- **State resolved per tick, not per frame.** `AnimationController.Update` runs from `PostAI` on
+  both attachment classes. `PreDraw` only draws, resolving once itself if no update has run yet
+  (bestiary icons). `AnimationPlayer.IsFinished` is computed from elapsed time instead of being
+  set as a side effect of drawing, so Once-mode clips finish correctly even off-screen.
+- **Closer to vanilla drawing.** Draws use `npc.GetAlpha(drawColor)`. Sheets can declare an
+  optional `shimmerTexturePath` used when `npc.IsShimmerVariant`.
+- **Unload cleanup.** `AnimFramework.Unload()` clears the registry, detectors, `AnimatedNPC`'s set
+  cache and the clock.
+- **Names.** `AnimStates` / `AnimOverlays` constants; the Idle-paired Blink state is now
+  `IdleBlink`.
 
 ---
 
 ## Current Code Status (recap)
 
-As of this doc, `AnimationController.cs` implements: Idle, Walking, Sitting, Attacking
-(types 0/1/2; melee unhandled by design), the detector-list extension point, and the Blink
-timed overlay, on top of the already-solid core engine (`AnimationClip`, `AnimationPlayer`,
-`AnimatedNPC`, `AnimationRegistry`, `AnimatedGlobalNPC`, `SheetLayoutLoader`) and the
-already-resolved Talk overlay / per-clip origin.
+As of 2026-11-26, `AnimationController.cs` implements Idle, Walking, Attacking (types 0/1/2;
+melee unhandled by design), Talk, SpecialIdle, IdleBlink, the Blink timed overlay, per-type
+state detectors and state groups (Alert), on top of the core engine (`AnimationClip`,
+`AnimationPlayer`, `AnimationClock`, `AnimatedNPC`, `AnimationRegistry`, `AnimatedGlobalNPC`,
+`SheetLayoutLoader`).
 
 **Still open:**
-1. SpecialIdle — framework-original random-chance-after-N-ticks logic, not implemented.
-2. Falling/Airborne (§7) — no confirmed vanilla signal; deliberately deferred.
-3. Attacking/Sitting hook and field names need verification at first real Build+Reload (flagged
-   in-code at each call site).
-4. `GuideExpandedAnimations`'s sample sheet (`Guide_Sheet.json`) is still Idle-only (POC scope)
-   — extending it to exercise Walking/Attacking/Sitting/Blink would be a good first real-game
-   verification pass once a live tModLoader install is available, and would incidentally be the
-   first live test of the graceful-degradation contract (§3) as clips get added incrementally.
+1. Sitting: no readable vanilla signal found yet; needs in-game testing.
+2. Falling/Airborne (§7): no confirmed vanilla signal; deliberately deferred.
+3. `ModNPC`-side hook signatures (`TownNPCAttackProj`, `TownNPCAttackMagic`, `PickEmote`,
+   `PostAI`) and `NPC.IsShimmerVariant` should be confirmed at the next Build+Reload.
+4. The Guide sheet is placeholder art; no shimmer-variant sheet is authored yet.

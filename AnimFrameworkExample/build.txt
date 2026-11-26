@@ -1,4 +1,4 @@
-displayName = Guide Expanded Animations
+displayName = AnimFramework Example
 author = MunSing Leong
 version = 0.1
 side = Client

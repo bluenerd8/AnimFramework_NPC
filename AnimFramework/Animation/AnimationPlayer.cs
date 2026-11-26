@@ -1,31 +1,40 @@
 using System;
-using System.Diagnostics;
 
 namespace AnimFramework.Animation
 {
     /// <summary>
-    /// Per-instance playback head for a single <see cref="AnimationClip"/>. Driven by a
-    /// real-time <see cref="Stopwatch"/> rather than Terraria's 60-tick frame counter, so
-    /// playback stays smooth independent of tick rate / uncapped FPS — the framework's core
-    /// "bypass" (see the Core Timing Model section of ANIMFRAMEWORK_SPEC.md).
+    /// Per-instance playback head for a single <see cref="AnimationClip"/>, timed off
+    /// <see cref="AnimationClock"/> rather than Terraria's 60-tick counter. Everything here is
+    /// computed from elapsed time, so state can be read from the update tick even while the NPC
+    /// is off-screen and never drawn.
     /// </summary>
     public class AnimationPlayer
     {
-        private readonly Stopwatch _stopwatch = new Stopwatch();
         private AnimationClip _clip;
+        private double _startTime;
 
         public AnimationClip Clip
         {
             get { return _clip; }
         }
 
-        public bool IsFinished { get; private set; }
-
         /// <summary>
-        /// Starts playing the given clip from frame 0. Always restarts, even if this is the
-        /// same clip as before — callers are expected to only call this on an actual
-        /// state-entry edge (see AnimationController), not on every frame the state is active.
+        /// True once a Once-mode clip has played all its frames (and always for a single-frame
+        /// clip). Never true for Loop or PingPong clips.
         /// </summary>
+        public bool IsFinished
+        {
+            get
+            {
+                if (_clip == null)
+                    return false;
+                if (_clip.FrameCount == 1)
+                    return true;
+                return _clip.Loop == LoopMode.Once && CyclePosition() >= _clip.FrameCount;
+            }
+        }
+
+        /// <summary>Starts the clip from frame 0. Always restarts, even for the same clip; call only on a state change.</summary>
         public void Play(AnimationClip clip)
         {
             _clip = clip;
@@ -34,68 +43,48 @@ namespace AnimFramework.Animation
 
         public void Reset()
         {
-            _stopwatch.Restart();
-            IsFinished = false;
+            _startTime = AnimationClock.Now;
         }
 
-        /// <summary>Current frame index for the active clip, given elapsed real time.</summary>
+        /// <summary>Fractional frames elapsed since <see cref="Play"/>.</summary>
+        private double CyclePosition()
+        {
+            return (AnimationClock.Now - _startTime) * _clip.Fps;
+        }
+
         public int GetCurrentFrame()
         {
-            if (_clip == null || _clip.FrameCount <= 0)
+            if (_clip == null || _clip.FrameCount <= 1)
                 return 0;
 
             int frameCount = _clip.FrameCount;
-            if (frameCount == 1)
-            {
-                IsFinished = true;
-                return 0;
-            }
-
-            double cyclePos = _stopwatch.Elapsed.TotalSeconds * _clip.Fps; // fractional frames elapsed
+            int t = (int)CyclePosition();
 
             switch (_clip.Loop)
             {
                 case LoopMode.Once:
-                    if (cyclePos >= frameCount)
-                    {
-                        IsFinished = true;
-                        return frameCount - 1;
-                    }
-                    IsFinished = false;
-                    return (int)cyclePos;
+                    return Math.Min(t, frameCount - 1);
 
                 case LoopMode.PingPong:
                     {
-                        int pingPongLength = Math.Max(1, (frameCount - 1) * 2);
-                        int t = (int)cyclePos % pingPongLength;
-                        IsFinished = false;
-                        return t < frameCount ? t : pingPongLength - t;
+                        int length = (frameCount - 1) * 2;
+                        int p = t % length;
+                        return p < frameCount ? p : length - p;
                     }
 
                 case LoopMode.Loop:
                 default:
-                    IsFinished = false;
-                    return (int)cyclePos % frameCount;
+                    return t % frameCount;
             }
         }
 
-        /// <summary>
-        /// How many full loops the active clip has completed since <see cref="Play"/> was last
-        /// called — used by loop-count-triggered features (currently the Idle-paired Blink
-        /// state, see <c>AnimationController.DetermineIdleState</c>). Meaningless (and always 0)
-        /// for anything but a Loop-mode clip: Once/PingPong clips don't have a "completed loops"
-        /// concept the way a continuously-wrapping Loop clip does. Derived from the same
-        /// elapsed-time/Fps math as <see cref="GetCurrentFrame"/> rather than tracked separately,
-        /// so it needs no extra state and naturally resets to 0 whenever <see cref="Play"/>
-        /// restarts the clip (a fresh state entry), exactly like frame position does.
-        /// </summary>
+        /// <summary>Full loops completed since <see cref="Play"/>. Always 0 for non-Loop clips.</summary>
         public int GetCompletedLoops()
         {
             if (_clip == null || _clip.FrameCount <= 0 || _clip.Loop != LoopMode.Loop)
                 return 0;
 
-            double cyclePos = _stopwatch.Elapsed.TotalSeconds * _clip.Fps;
-            return (int)cyclePos / _clip.FrameCount;
+            return (int)CyclePosition() / _clip.FrameCount;
         }
     }
 }

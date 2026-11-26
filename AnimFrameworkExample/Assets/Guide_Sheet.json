@@ -1,5 +1,5 @@
 {
-  "texturePath": "GuideExpandedAnimations/Assets/Guide_Sheet",
+  "texturePath": "AnimFrameworkExample/Assets/Guide_Sheet",
   "frameWidth": 32,
   "frameHeight": 48,
   "rows": [
@@ -41,7 +41,7 @@
       "loop": "Once"
     },
     {
-      "state": "Blink",
+      "state": "IdleBlink",
       "row": 5,
       "frameCount": 4,
       "fps": 10,
@@ -62,7 +62,7 @@
       "loop": "Loop"
     },
     {
-      "state": "AlertBlink",
+      "state": "AlertIdleBlink",
       "row": 8,
       "frameCount": 4,
       "fps": 10,

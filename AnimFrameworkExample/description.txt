@@ -1,0 +1,8 @@
+Example content mod for AnimFramework, showing how to use it on the vanilla Guide. Replaces his animations with real-time,
+uncapped-FPS sprite animation: Idle, Walking, Attacking, Talk, an occasional special idle,
+blinking, and an "Alert" variant of his idle and walk poses when enemies are nearby.
+
+The sprite sheet is currently placeholder art. Swap Assets/Guide_Sheet.png (and adjust
+Guide_Sheet.json) for real sprites; no code changes needed.
+
+Requires AnimFramework.

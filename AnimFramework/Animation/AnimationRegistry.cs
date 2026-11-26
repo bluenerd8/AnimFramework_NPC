@@ -1,54 +1,88 @@
 using System;
 using System.Collections.Generic;
+using Terraria.ModLoader;
 
 namespace AnimFramework.Animation
 {
     /// <summary>
-    /// Opt-in lookup table from NPC type to its <see cref="AnimationSet"/>. Content mods call
-    /// <see cref="Register"/> for exactly the NPC types they own (in their own PostSetupContent),
-    /// mirroring standard cross-mod compatibility patterns (Mod.Call()-style APIs, DI container
-    /// registration) — the framework never scans installed mods or guesses. NPC types not
-    /// present here cost nothing and are left untouched by <see cref="AnimatedGlobalNPC"/>.
+    /// Opt-in lookup from NPC type to its <see cref="AnimationSet"/>, for animating NPCs you
+    /// don't own the class of (vanilla or another mod's). Content mods call
+    /// <see cref="Register"/> from their own <c>PostSetupContent</c>. Unregistered types are
+    /// never touched by <see cref="AnimatedGlobalNPC"/>.
     /// </summary>
     public static class AnimationRegistry
     {
-        // Lazy: Register() itself is just storing a delegate; the (possibly JSON/texture
-        // loading) set builder only actually runs the first time that NPC type is looked up,
-        // and the result is cached from then on.
-        private static readonly Dictionary<int, Lazy<AnimationSet>> Builders = new Dictionary<int, Lazy<AnimationSet>>();
+        private sealed class Entry
+        {
+            public Func<AnimationSet> Builder;
+            public AnimationSet Set;
+            public bool Attempted;
+        }
+
+        private static readonly Dictionary<int, Entry> Entries = new Dictionary<int, Entry>();
 
         /// <summary>
-        /// Registers an animation set builder for the given NPC type (a vanilla NPCID.* constant,
-        /// or another mod's exposed type). If two content mods register the same NPC type, the
-        /// most recently registered one wins — silently, by design of the underlying Dictionary.
-        /// Mod authors should be aware of this rather than treating it as a bug.
+        /// Registers a set builder for an NPC type. The builder runs the first time that NPC is
+        /// updated or drawn, and its result is cached. If the builder throws, the error is logged
+        /// once and that NPC falls back to vanilla drawing.
+        ///
+        /// Registering a type that's already registered replaces the earlier entry and logs a
+        /// warning, so a clash between two content mods shows up in client.log.
         /// </summary>
         public static void Register(int npcType, Func<AnimationSet> setBuilder)
         {
-            Builders[npcType] = new Lazy<AnimationSet>(setBuilder);
+            if (setBuilder == null)
+                throw new ArgumentNullException(nameof(setBuilder));
+
+            if (Entries.ContainsKey(npcType))
+                Log.Warn($"AnimFramework: NPC type {npcType} was registered more than once; the latest registration replaces the earlier one.");
+
+            Entries[npcType] = new Entry { Builder = setBuilder };
         }
 
         public static void Unregister(int npcType)
         {
-            Builders.Remove(npcType);
+            Entries.Remove(npcType);
         }
 
         public static bool IsRegistered(int npcType)
         {
-            return Builders.ContainsKey(npcType);
+            return Entries.ContainsKey(npcType);
         }
 
+        /// <summary>Gets the built set, building it on first call. Returns false if unregistered or if building failed.</summary>
         public static bool TryGet(int npcType, out AnimationSet set)
         {
-            Lazy<AnimationSet> lazy;
-            if (Builders.TryGetValue(npcType, out lazy))
+            set = null;
+            Entry entry;
+            if (!Entries.TryGetValue(npcType, out entry))
+                return false;
+
+            if (!entry.Attempted)
             {
-                set = lazy.Value;
-                return true;
+                entry.Attempted = true;
+                try
+                {
+                    entry.Set = entry.Builder();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"AnimFramework: building the animation set for NPC type {npcType} failed; that NPC will use vanilla drawing.", ex);
+                }
             }
 
-            set = null;
-            return false;
+            set = entry.Set;
+            return set != null;
+        }
+
+        internal static void Clear()
+        {
+            Entries.Clear();
+        }
+
+        private static log4net.ILog Log
+        {
+            get { return ModContent.GetInstance<global::AnimFramework.AnimFramework>().Logger; }
         }
     }
 }

@@ -4,5 +4,5 @@ Pure engine, no gameplay content: clip/player classes, a JSON sheet-layout loade
 attachment mechanisms (a base ModNPC class, and a registry + GlobalNPC for attaching animation
 to vanilla or other mods' NPCs without inheritance).
 
-Adds nothing to your game by itself — install a content mod built against it (e.g. "Guide
-Expanded Animations") to see anything change.
+Adds nothing to your game by itself. Install a content mod built against it (e.g.
+"AnimFramework Example") to see anything change.

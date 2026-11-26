@@ -8,7 +8,7 @@ NPC states/signals), with custom/modded NPC behavior explicitly deferred to a fu
 Two-mod structure:
 - **AnimFramework** (library) — zero gameplay content, zero NPC-specific data. Pure engine:
   clip/player classes, JSON loader, attachment mechanisms (base class + registry).
-- **Content mods** (e.g. "Guide Expanded Animations") — depend on AnimFramework via
+- **Content mods** (e.g. "AnimFramework Example") — depend on AnimFramework via
   `modReferences`, own all actual sprite sheets, JSON layout files, and one `Register()` call
   per NPC they animate.
 
@@ -19,8 +19,8 @@ The library never contains a single NPC-specific number. Anything specific to ho
 
 ## Core Timing Model
 
-- Animation playback is driven by a `Stopwatch` (real elapsed time), not Terraria's 60-tick
-  `frameCounter` — this is the "bypass" that makes uncapped/off-tick-rate animation possible,
+- Animation playback is driven by `AnimationClock` (real elapsed time that stops while the game
+  is paused), not Terraria's 60-tick `frameCounter` — this is the "bypass" that makes uncapped/off-tick-rate animation possible,
   and it only matters because frame data (below) is fully declarable, not hardcoded.
 - **Per-row (per-animation) speed declaration, not per-NPC.** Idle, Walking, Attacking etc.
   each declare their own pace independently — a single global FPS for the whole NPC was
@@ -109,7 +109,7 @@ framework.)
 ### JSON Schema (conceptual shape)
 ```json
 {
-  "texturePath": "GuideExpandedAnimations/Assets/Guide_Sheet",
+  "texturePath": "AnimFrameworkExample/Assets/Guide_Sheet",
   "frameWidth": 64,
   "frameHeight": 64,
   "rows": [
@@ -127,7 +127,8 @@ framework.)
   ]
 }
 ```
-(`fps` vs `duration` per row is either/or; loader derives whichever wasn't given. Frame count
+(Optional sheet-level `"shimmerTexturePath"` points at a same-sized sheet drawn for the town
+NPC's shimmered variant; omit it to use the normal sheet for both. `fps` vs `duration` per row is either/or; loader derives whichever wasn't given. Frame count
 is always required — it's what tells the reader how many columns to step through in that row.
 `intervalMin`/`intervalMax` are optional and only meaningful for timed-trigger overlays like
 Blink — omit both for the framework default, declare either or both to override it. `frameWidth`/
@@ -164,8 +165,9 @@ and the computed frame-center origin, exactly as before this schema addition.)
      This was `AnimationController.DrawOverlays`'s original design; Talk no longer uses it (the
      `ShouldDrawOverlay` "Talk" case was removed). The timed-overlay Blink mechanism (§ below)
      still exists and is independent of this.
-7. Blink (Idle-paired) — a *second*, independent Blink mechanism from the timed overlay of the
-   same name (see `ANIMFRAMEWORK_NEW_FEATURES.md` §4 vs §11): a real sibling state to Idle,
+7. IdleBlink (state name `"IdleBlink"`; was `"Blink"` before 2026-11-26, renamed so it no
+   longer shares a name with the Blink overlay) — a *second*, independent mechanism from the
+   timed Blink overlay (see `ANIMFRAMEWORK_NEW_FEATURES.md` §4 vs §11): a real sibling state to Idle,
    triggered by completed Idle loops rather than elapsed time, with no hold-to-completion
    override (resumed velocity cuts it off immediately via the Walking gate, same as any other
    idle-family variant that doesn't ask for priority). Optional and Idle-only by design — for
@@ -173,14 +175,14 @@ and the computed frame-center origin, exactly as before this schema addition.)
    overlay mechanism's cross-state reach wasn't worth its per-state alignment cost here. The two
    mechanisms coexist; a content mod picks whichever fits a given NPC.
 
-**State groups** (not a true state themselves — a prefix modifier over Walking/Idle/Blink/
-SpecialIdle only; see `ANIMFRAMEWORK_NEW_FEATURES.md` §12): a registered `RegisterStateGroupDetector`
-picks an active prefix (e.g. `"Alert"`), and each of those four names is looked up as
+**State groups** (not a true state themselves — a prefix modifier over Walking/Idle/IdleBlink/
+SpecialIdle only; see `ANIMFRAMEWORK_NEW_FEATURES.md` §12): a group detector registered for that
+NPC type with `RegisterStateGroupDetector(npcType, detector)` picks an active prefix (e.g. `"Alert"`), and each of those four names is looked up as
 `{prefix}{Name}` first, falling back to the bare name whenever a grouped flavor isn't authored.
 Attacking/Talk/Sitting are never grouped — a threat being nearby doesn't change how Guide
 attacks or talks, only how he stands/walks/blinks/varies when he isn't doing either. Alert is
 the first (and currently only) registered group, covering `AlertIdle`/`AlertWalking`/
-`AlertBlink`/`AlertSpecialIdle`, all derived from `NPCID.Sets.DangerDetectRange[Type]`-based
+`AlertIdleBlink`/`AlertSpecialIdle`, all derived from `NPCID.Sets.DangerDetectRange[Type]`-based
 proximity to hostile NPCs.
 
 **Explicitly deferred to later passes:**
@@ -217,11 +219,10 @@ signal exists:
     falsely trigger Talk. See `AnimationController.NotifyTalkTriggered`.
   A `Loop`-mode Talk clip keeps the original level-triggered behavior (held for as long as the
   player's dialog is open) for authors who prefer that — see `DetermineTalkingState`.
-- **Sitting** — vanilla has native town-NPC sitting support (added 1.4.4, bench/chair
-  interactions) with an `NPC.sitting` struct including an "is currently sitting" flag —
-  preferred over guessing from zero-velocity-near-furniture. Now wired as `NPC.sitting.isSitting`
-  in `AnimationController.DetermineSittingState`, but the field name is **still not confirmed
-  against a live API reference** — verify at first Build+Reload (see Implementation Status).
+- **Sitting** — vanilla has native town-NPC sitting (added 1.4.4, bench/chair interactions),
+  but `NPC` exposes no readable "is sitting" field: the earlier `NPC.sitting.isSitting` guess
+  didn't compile, and the only related member is the `SitDown(...)` placement helper. **Not
+  wired**; needs in-game testing to find a reliable signal (see Implementation Status).
 - **Idle / SpecialIdle** — no vanilla-native equivalent concept; stays framework-original logic.
   Idle is effectively the fallback default when no other state applies.
 - **Attacking** — confirmed via `NPCID.Sets` fields and hooks, **not uniform across all NPCs**:
@@ -277,9 +278,11 @@ Implementation Status): `ModNPC.PreDraw(SpriteBatch, Vector2 screenPos, Color dr
 `GlobalNPC.PreDraw(NPC, SpriteBatch, Vector2, Color)`. Note `FindFrame` — vanilla's own
 animation hook, called once per fixed-60Hz logic tick — was deliberately **not** used for
 playback here: it would cap real-time smoothness back down to tick rate on any client whose
-render rate outpaces the logic tick, defeating the framework's whole premise. `PreDraw`
-(called once per actual render/`Draw()` call) is used instead, with the NPC's own draw fully
-overridden (`return false`) rather than relying on `npc.frame`/`FindFrame`.
+render rate outpaces the logic tick, defeating the framework's whole premise. Instead, state
+is resolved once per tick in `PostAI` (cheap, and keeps signals flowing while off-screen), and
+`PreDraw` (called once per actual render) picks the frame from real elapsed time and draws it,
+with the NPC's own draw fully overridden (`return false`) rather than relying on
+`npc.frame`/`FindFrame`.
 
 ---
 
@@ -294,7 +297,7 @@ overridden (`return false`) rather than relying on `npc.frame`/`FindFrame`.
   2. **Registry** (`AnimationRegistry` + `AnimatedGlobalNPC`) — for attaching animations to
      *any* NPC (vanilla NPC via `NPCID.*` constant, or another mod's NPC via their exposed
      type), without needing inheritance. Required for compatibility/expansion-style content
-     mods like "Guide Expanded Animations."
+     mods like "AnimFramework Example."
 - **Explicit registration only — no mod detection.** No scanning `ModLoader.Mods`, no
   reflection-based discovery of what's installed. A content mod depends on the library via
   `modReferences` in `build.txt` and calls `AnimationRegistry.Register(...)` for exactly the
@@ -336,98 +339,61 @@ Distinguish between two categories:
 
 ---
 
-## Implementation Status (as of this doc)
+## Implementation Status (as of 2026-11-26)
 
-Files written (C# targeting tModLoader; **not yet compiled/tested against a real tModLoader
-install** — key hook signatures were checked against docs.tmodloader.net while writing this
-pass, but a first real `Build + Reload` should still be expected to surface small fixes):
+C# targeting tModLoader. Hook signatures were checked against docs.tmodloader.net, but treat the
+first `Build + Reload` after any change as the real verification.
 
-- `AnimFramework/Animation/LoopMode.cs` — `Loop` / `PingPong` / `Once` enum.
-- `AnimFramework/Animation/AnimationClip.cs` — clip definition: state name, texture path, frame
-  width/height/count, row (Y offset for shared multi-row sheets), fps/duration (mutually
-  derived), loop mode, optional per-clip origin, cached `Asset<Texture2D>` (`ImmediateLoad`).
-- `AnimFramework/Animation/AnimationPlayer.cs` — `Stopwatch`-driven playback: `GetCurrentFrame()`,
-  `Play()`/`Reset()`, `IsFinished`, Loop/PingPong/Once math.
-- `AnimFramework/Animation/AnimationSet.cs` — states dictionary + overlays list container for
-  one NPC type's full animation set.
-- `AnimFramework/Animation/AnimationRuntime.cs` — per-instance mutable state (current state,
-  state player, overlay players/active-set). Must be freshly built per NPC instance — see the
-  `Clone()` overrides below.
-- `AnimFramework/Animation/AnimationController.cs` — the shared state-machine + draw logic used
-  by both attachment paths: `DetermineState()` (Idle/Walking/Attacking/Talk wired; Sitting
-  stubbed back to a TODO — see Known Gaps; SpecialIdle wired via `DetermineIdleState`, reusing
-  the same randomized-interval mechanism as Blink — `AnimationClip.IntervalMin`/`IntervalMax`,
-  `RollNextInterval` — applied to a true state instead of an overlay; `DetermineTalkingState`
-  likewise a true state now, not an overlay — see Baseline Animation Set), a public
-  `RegisterStateDetector` extension point (see `ANIMFRAMEWORK_NEW_FEATURES.md` §2), `PreDraw()`,
-  overlay activate/deactivate edge tracking (now just Blink — Talk's overlay case was removed),
-  `DrawClip()`. Promoted from `internal` to `public` so `RegisterStateDetector` is reachable
-  from content-mod assemblies; every other member stays `internal`.
-- `AnimFramework/Animation/AnimatedNPC.cs` — abstract base class (attachment path 1): per-type
-  cached `AnimationSet`, per-instance `AnimationRuntime` rebuilt fresh on `Clone()` (fixes the
-  MemberwiseClone shared-Stopwatch bug), `PreDraw` delegating to `AnimationController`,
-  `TownNPCAttackProj` override calling `AnimationController.TriggerAttack` (observation only —
-  `projType`/`attackDelay` untouched).
-- `AnimFramework/Animation/AnimationRegistry.cs` — static `Dictionary<int, Lazy<AnimationSet>>`
-  mapping NPC type → lazily-built, cached animation set. `Register`, `Unregister`, `TryGet`,
-  `IsRegistered`.
-- `AnimFramework/Animation/AnimatedGlobalNPC.cs` — attachment path 2: `GlobalNPC` with
-  `InstancePerEntity = true`; `AppliesToEntity` gated on `AnimationRegistry` membership
-  (opt-in, not global); same Clone-safety fix as `AnimatedNPC`; delegates to the same
-  `AnimationController` as the base-class path (no duplicated state/draw logic between the two);
-  same `TownNPCAttackProj` override as `AnimatedNPC`.
-- `AnimFramework/Animation/SheetLayoutLoader.cs` — `SheetDefinition`/`SheetRowDefinition` JSON
-  schema classes, `System.Text.Json`-based loader (via `Mod.GetFileBytes`), with the defensive
-  handling described above; converts a parsed sheet definition into an `AnimationSet`.
-- `AnimFramework/AnimFramework.cs`, `build.txt`, `description.txt`, `icon.png` — library mod
-  shell. No gameplay content.
-- `GuideExpandedAnimations/GuideExpandedAnimations.cs`, `build.txt` (`modReferences =
-  AnimFramework`), `description.txt`, `icon.png` — content mod shell.
-- `GuideExpandedAnimations/GuideAnimationSetup.cs` — `ModSystem.PostSetupContent()` registering
-  `NPCID.Guide` via `AnimationRegistry.Register`, per the Registry attachment path (resolved
-  decision: the POC targets the real vanilla Guide, not a from-scratch lookalike — see Rollout
-  Plan below).
-- `GuideExpandedAnimations/Assets/Guide_Sheet.json` — 5 rows, no overlays: `Idle` (4 frames,
-  32×48, 4fps, `Loop`), `Walking` (row 1, 8 frames, 8fps, `Loop`), `Attacking` (row 2, 2 frames,
-  0.1s duration, `Once`), `SpecialIdle` (row 3, 3 frames, 4fps, `Once`, `intervalMin`/
-  `intervalMax` 8–18s), `Talk` (row 4, 2 frames, 3fps, `Loop`).
-- `GuideExpandedAnimations/Assets/Guide_Sheet.png` — **generated placeholder art**, several
-  independently-authored passes merged together (blue Idle, green Walking, red Attacking, gold
-  SpecialIdle arm-raise, purple Talk gesture with a raised hand + mouth-open frame — full body,
-  not an overlay mark), not real Guide sprite work. Swap this file (and extend the JSON) for
-  real art without touching any engine code.
+**Library (`AnimFramework/`):**
+- `AnimFramework.cs`: library mod shell. `Unload()` clears all framework statics (registry,
+  detectors, `AnimatedNPC` set cache, clock) so content-mod assemblies can unload on reload.
+- `Animation/AnimationClock.cs`: framework-wide real-time clock (`Stopwatch`-backed) that
+  stops while `Main.gamePaused`. Every timestamp in the framework reads `AnimationClock.Now`.
+- `Animation/AnimStates.cs`: name constants (`AnimStates.Idle`, `Walking`, `Attacking`, `Talk`,
+  `Sitting`, `SpecialIdle`, `IdleBlink`; `AnimOverlays.Blink`).
+- `Animation/LoopMode.cs`: `Loop` / `PingPong` / `Once`.
+- `Animation/AnimationClip.cs`: immutable clip definition (row, frames, fps/duration, loop mode,
+  origin, interval and loop-count ranges, optional shimmer-variant sheet).
+- `Animation/AnimationPlayer.cs`: per-instance playback head. Frame index, `IsFinished` and
+  completed-loop count are all computed from elapsed clock time, so they're valid from the
+  update tick even for NPCs that aren't being drawn.
+- `Animation/AnimationSet.cs`: states dictionary + overlays list for one NPC type.
+- `Animation/AnimationRuntime.cs`: per-instance mutable state. Rebuilt per instance via the
+  `Clone()` overrides.
+- `Animation/AnimationController.cs`: shared state machine and drawing. `Update()` resolves state
+  once per tick (from `PostAI`); `PreDraw()` only draws (and resolves once itself if no update
+  has run yet, e.g. bestiary icons). Draws with `npc.GetAlpha(drawColor)` and the shimmer sheet
+  when `npc.IsShimmerVariant`. Public API: `RegisterStateDetector(npcType, detector)` and
+  `RegisterStateGroupDetector(npcType, detector)`, both scoped per NPC type.
+- `Animation/AnimatedNPC.cs`: base class for new NPCs (attachment path 1). Per-type cached set;
+  a throwing `BuildAnimationSet()` is logged once and that type falls back to vanilla drawing.
+- `Animation/AnimationRegistry.cs`: NPC type → set builder (attachment path 2). Builder runs on
+  first use and is cached; a throwing builder is logged once and that NPC falls back to vanilla
+  drawing. Re-registering a type logs a warning.
+- `Animation/AnimatedGlobalNPC.cs`: `GlobalNPC`, `InstancePerEntity`, applies only to registered
+  types. `PostAI`, `PreDraw`, attack and emote hooks all delegate to `AnimationController`.
+- `Animation/SheetLayoutLoader.cs`: JSON schema + loader (see Sheet Authoring Convention).
+  Bad rows are logged and skipped; out-of-bounds rows are rejected; an optional
+  `shimmerTexturePath` must match the main sheet's pixel size or it's ignored with a warning.
 
-**Known gaps against the current design discussion (not yet coded):**
-- Attack-state binding (types 0/1/2) is coded and confirmed working
-  (`AnimationController.DetermineAttackingState`, plus `TownNPCAttackProj`/`TownNPCAttackMagic`
-  overrides on both attachment classes — `GlobalNPC`-side signatures confirmed directly against
-  docs.tmodloader.net; `ModNPC`-side signatures unverified by that same source, worth a
-  Build+Reload check). Melee (AttackType 3) remains explicitly unhandled — no confirmed hook
-  exists for it. See `ANIMFRAMEWORK_NEW_FEATURES.md` §5/§6 for the full design.
-- **Sitting-state binding — reverted back to unimplemented.** An earlier pass guessed
-  `npc.sitting.isSitting` by analogy with the confirmed `Player.sitting` field; that guess does
-  not compile (confirmed the hard way — a real Build+Reload error, `NPC` has no such member).
-  Re-checked directly against docs.tmodloader.net (both the `stable` and `1.4-preview` NPC class
-  references): the only sitting-related member exposed on `NPC` at all is `SitDown(Point
-  anchorTilePosition, out int direction, out Vector2 bottom)`, a helper vanilla uses to *compute
-  where to place* a sitting NPC, not something readable to check "is this NPC currently
-  sitting". `DetermineSittingState` is back to a documented no-op pending empirical testing
-  (spawn a town NPC on a bench, log its fields) rather than another guess.
-- SpecialIdle's occasional-variant logic — **now implemented**, in `DetermineIdleState`, reusing
-  Blink's randomized-interval mechanism (see above) rather than duplicating it. Talk's overlay
-  logic was already wired (`Main.LocalPlayer.talkNPC == NPC.whoAmI`); it previously had no
-  content authored (`overlays: []`) — it now does (see Guide_Sheet.json above).
-- Falling/Airborne — no confirmed vanilla signal; deliberately deferred (now a one-line addition
-  via the detector-list pattern once a signal is confirmed — see `ANIMFRAMEWORK_NEW_FEATURES.md` §7).
-- Per-clip origin is wired into `AnimationClip`/`AnimationController.DrawClip` (unlike the
-  original design-only note); per-frame origin overrides remain out of scope, as designed.
-- Triggered/one-shot secondary effect system (attack-gust style) — explicitly deferred, no code
-  yet.
-- Because `AnimatedGlobalNPC.PreDraw` fully overrides the vanilla Guide's draw call while an
-  animated state is active, any vanilla per-instance visual effects on Guide (dye/shader-style
-  effects, if any apply to town NPCs) are bypassed along with the rest of vanilla's draw. Not
-  applicable to vanilla Guide today as far as this pass could confirm, but worth remembering if
-  this pattern is reused on an NPC where it matters.
+**Example content mod (`AnimFrameworkExample/`):**
+- `GuideAnimationSetup.cs`: registers `NPCID.Guide` through the registry and an "Alert" state
+  group (hostile within `DangerDetectRange`) scoped to the Guide only.
+- `Assets/Guide_Sheet.json` + `.png`: 10 rows: Idle, Walking, Attacking, SpecialIdle, Talk,
+  IdleBlink, and Alert flavors of Idle/Walking/IdleBlink/SpecialIdle. The PNG is
+  **generated placeholder art**; swap it (and adjust the JSON) without touching engine code.
+
+**Known gaps:**
+- **Sitting** is not wired. `NPC` exposes no readable "is sitting" field (only the `SitDown(...)`
+  placement helper; the earlier `npc.sitting.isSitting` guess didn't compile). Needs in-game
+  testing to find a signal.
+- **Melee attacks** (AttackType 3) have no confirmed hook, so they never enter Attacking.
+- **Falling/Airborne**: no confirmed vanilla signal; easy to add later as a per-type detector.
+- **Vanilla draw extras**: returning `false` from `PreDraw` skips vanilla's own draw. Check
+  in-game whether extras such as party hats still appear.
+- **Pause and the bestiary**: the clock stops on pause, so bestiary icons opened during
+  singleplayer autopause won't animate.
+- Triggered secondary effects (attack-gust style) and per-frame origins remain out of scope.
 
 ---
 
@@ -435,7 +401,7 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
 1. Ship as proof of concept first: **one NPC, one state (Idle only)**, small frame count.
    **Resolved**: the POC targets the real vanilla Guide (`NPCID.Guide`) via the Registry +
    `AnimatedGlobalNPC` attachment path, not a from-scratch lookalike NPC via the base class —
-   chosen over the base-class route because "Guide Expanded Animations" is explicitly a
+   chosen over the base-class route because "AnimFramework Example" is explicitly a
    compatibility/expansion-style content mod per the Modularity section, and proving the
    registry path end-to-end (including vanilla-NPC coexistence) was judged more valuable than
    deferring that risk to a later pass. Confirm real-time playback and rendering work correctly
@@ -455,7 +421,7 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
 2. Install a C# IDE — Visual Studio Community (recommended, best debugging) or VS Code + C#
    extension. Install the .NET SDK if not bundled.
 3. Point tModLoader's Mod Sources folder at (or copy/symlink into it) this repo's
-   `AnimFramework/` and `GuideExpandedAnimations/` folders — they're laid out as standard
+   `AnimFramework/` and `AnimFrameworkExample/` folders — they're laid out as standard
    tModLoader mod source folders (`build.txt` + namespace-matching `.cs` files) but were
    authored outside a live tModLoader install, so **no `.csproj` is committed**. Opening/building
    them once through tModLoader's Mod Sources UI (or its "Build" command) generates the
@@ -463,8 +429,8 @@ pass, but a first real `Build + Reload` should still be expected to surface smal
    folder it didn't create, use tModLoader's "Create Mod" wizard against an empty temp
    folder and copy the generated `.csproj` in as a starting point.
 4. `build.txt` in both mods already sets `displayName`/`author`/`version`/`side`;
-   `GuideExpandedAnimations/build.txt` already has `modReferences = AnimFramework`.
-5. Build + Reload AnimFramework first, then GuideExpandedAnimations, to catch compile errors
+   `AnimFrameworkExample/build.txt` already has `modReferences = AnimFramework`.
+5. Build + Reload AnimFramework first, then AnimFrameworkExample, to catch compile errors
    early per mod.
 6. Enable both mods, test in-world with an actual Guide NPC present (and with multiple Guides
    spawned via multiplayer/`cheatsheet`-style tools if available, to catch any instance-sharing

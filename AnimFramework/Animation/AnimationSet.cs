@@ -3,10 +3,8 @@ using System.Collections.Generic;
 namespace AnimFramework.Animation
 {
     /// <summary>
-    /// The full set of animation clips for one NPC type: named states (mutually exclusive,
-    /// keyed by state name e.g. "Idle") plus overlays (drawn on top of whatever state is
-    /// active, e.g. "Talk"). Built once per NPC type and shared/cached by whichever attachment
-    /// path (AnimatedNPC or AnimationRegistry) constructed it.
+    /// All clips for one NPC type: named states (mutually exclusive, e.g. "Idle") and overlays
+    /// (drawn on top of the current state, e.g. "Blink"). Built once per type and shared.
     /// </summary>
     public class AnimationSet
     {

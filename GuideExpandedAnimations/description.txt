@@ -1,8 +1,0 @@
-Proof-of-concept content mod for AnimFramework. Replaces the vanilla Guide's Idle animation with
-a real-time, uncapped-FPS sprite animation via AnimFramework's registry attachment path.
-
-Currently POC scope only (rollout plan step 1): one NPC (Guide), one state (Idle). The sheet is
-a generated placeholder — swap Assets/Guide_Sheet.png (and add rows to Guide_Sheet.json) for
-real art and the remaining baseline states (Walking, Attacking, Sitting, Talk).
-
-Requires AnimFramework.
